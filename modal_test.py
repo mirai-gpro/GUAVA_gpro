@@ -1,8 +1,7 @@
-Set-Content -Path modal_test.py -Value @'
 import modal
 import os
 
-# 1. 前回の成功したイメージ定義
+# 1. GUAVA環境の定義
 guava_image = (
     modal.Image.debian_slim(python_version="3.10")
     .apt_install("libgl1-mesa-glx", "libglib2.0-0", "git")
@@ -26,13 +25,14 @@ def run_guava():
     import subprocess
     os.chdir("/root/guava")
     
-    # lsの結果に基づき、パスを /assets/assets/... に修正
+    # lsの結果に基づき、パスを /assets/assets/... に設定
     model_path = "/assets/assets/GUAVA"
-    # ※もし example データがない場合はエラーになるので、まずはパスの存在を確認します
+    
+    # データの存在確認
     if not os.path.exists(model_path):
         return f"Error: Model not found at {model_path}. Please check volume paths."
 
-    # 推論コマンドの実行
+    # 推論コマンドの実行（READMEに基づく）
     cmd = [
         "python", "main/test.py",
         "-d", "0",
@@ -43,10 +43,14 @@ def run_guava():
     
     print(f"Executing: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
+    
+    # 実行ログを表示
     print(result.stdout)
-    return "Inference process completed! Check the logs above."
+    if result.stderr:
+        print(f"Error Log: {result.stderr}")
+        
+    return "Inference process finished."
 
 @app.local_entrypoint()
 def main():
     print(run_guava.remote())
-'@
