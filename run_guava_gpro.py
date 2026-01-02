@@ -24,37 +24,34 @@ image = (
         "pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu118"
     )
 
-    # 2. Build Tools & Core Libraries
+    # 2. Build environment
     .env({
-        "FORCE_CUDA": "1", 
-        "CUDA_HOME": "/usr/local/cuda", 
+        "FORCE_CUDA": "1",
+        "CUDA_HOME": "/usr/local/cuda",
         "MAX_JOBS": "4",
         "TORCH_CUDA_ARCH_LIST": "8.6",
         "CC": "clang",
         "CXX": "clang++"
     })
+
+    # 3. Install requirements.txt (as README says)
+    .add_local_file("./requirements.txt", remote_path="/tmp/requirements.txt", copy=True)
     .run_commands(
         "pip install chumpy==0.70 --no-build-isolation",
+        "pip install -r /tmp/requirements.txt --no-build-isolation",
+    )
+
+    # 4. Install PyTorch3D (as README says)
+    .run_commands(
         "pip install git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7 --no-build-isolation"
     )
-    
-    # 3. Submodules Build (copy=True を追加して物理コピー)
+
+    # 5. Submodules Build (as README says: cd submodules && pip install ...)
     .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=True)
     .run_commands(
-        "cd /root/GUAVA/submodules/diff-gaussian-rasterization-32 && pip install . --no-build-isolation",
-        "cd /root/GUAVA/submodules/simple-knn && pip install . --no-build-isolation",
-        "cd /root/GUAVA/submodules/fused-ssim && pip install . --no-build-isolation"
-    )
-    
-    # 4. Remaining libraries
-    .pip_install(
-        "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
-        "lmdb==1.6.2", "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
-        "rich==14.0.0", "opencv-python-headless", "xformers==0.0.24",
-        "tyro==0.8.0", "onnxruntime-gpu==1.18", "onnx==1.16", "mediapipe==0.10.21",
-        "transformers==4.37.0", "configer==1.3.1", "torchgeometry==0.1.2", "pynvml==13.0.1",
-        "colored==2.3.0", "kornia==0.7.0", "easydict==1.13",
-        "numpy==1.26.4"
+        "cd /root/GUAVA/submodules && pip install diff-gaussian-rasterization-32 --no-build-isolation",
+        "cd /root/GUAVA/submodules && pip install simple-knn --no-build-isolation",
+        "cd /root/GUAVA/submodules && pip install fused-ssim --no-build-isolation"
     )
     
     # 5. Project Assets (最後にまとめて追加)
