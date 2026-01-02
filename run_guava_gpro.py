@@ -192,12 +192,13 @@ def list_volume_contents(volume_path: str, max_depth: int = 3) -> str:
 # ============================================================================
 
 # Create image with submodules built in
+# Modal 1.0+: use add_local_dir(copy=True) instead of copy_local_dir
 guava_full_image = (
     guava_image
-    .copy_local_dir("submodules/diff-gaussian-rasterization-32", "/opt/guava/submodules/diff-gaussian-rasterization-32")
-    .copy_local_dir("submodules/simple-knn", "/opt/guava/submodules/simple-knn")
-    .copy_local_dir("submodules/fused-ssim", "/opt/guava/submodules/fused-ssim")
-    .copy_local_dir("submodules/lpipsPyTorch", "/opt/guava/submodules/lpipsPyTorch")
+    .add_local_dir("submodules/diff-gaussian-rasterization-32", "/opt/guava/submodules/diff-gaussian-rasterization-32", copy=True)
+    .add_local_dir("submodules/simple-knn", "/opt/guava/submodules/simple-knn", copy=True)
+    .add_local_dir("submodules/fused-ssim", "/opt/guava/submodules/fused-ssim", copy=True)
+    .add_local_dir("submodules/lpipsPyTorch", "/opt/guava/submodules/lpipsPyTorch", copy=True)
     .run_commands(
         "cd /opt/guava/submodules/diff-gaussian-rasterization-32 && pip install -e .",
         env={"FORCE_CUDA": "1", "TORCH_CUDA_ARCH_LIST": "7.0;7.5;8.0;8.6;8.9;9.0"},
