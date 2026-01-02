@@ -60,6 +60,9 @@ image = (
     .add_local_dir("./assets", remote_path="/root/GUAVA/assets")
     .add_local_dir("./main", remote_path="/root/GUAVA/main")
     .add_local_dir("./models", remote_path="/root/GUAVA/models")
+    .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset")
+    .add_local_dir("./utils", remote_path="/root/GUAVA/utils")
+    .add_local_dir("./configs", remote_path="/root/GUAVA/configs")
 )
 
 app = modal.App("guava-v3-fix-v4")
@@ -73,7 +76,11 @@ app = modal.App("guava-v3-fix-v4")
 )
 def run_guava():
     os.chdir("/root/GUAVA")
-    
+
+    # Add GUAVA to Python path for imports
+    import sys
+    sys.path.insert(0, "/root/GUAVA")
+
     search_path = "/root/EHM_results/processed_data/driving"
     target_data_path = os.path.join(search_path, "driving") if os.path.exists(os.path.join(search_path, "driving")) else search_path
     
@@ -87,7 +94,11 @@ def run_guava():
 
     cmd = ["python", "main/test.py", "-d", "0", "-m", "assets/GUAVA", "-s", "outputs/driving_avatar", "--data_path", target_data_path]
     print(f"--- STARTING INFERENCE: {target_data_path} ---")
-    subprocess.run(cmd, check=True)
+
+    # Set PYTHONPATH for subprocess
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "/root/GUAVA"
+    subprocess.run(cmd, check=True, env=env)
     guava_volume.commit()
 
 @app.local_entrypoint()
