@@ -66,6 +66,12 @@ def create_guava_image():
         index_url="https://download.pytorch.org/whl/cu118",
     )
 
+    # Upgrade pip first (needed for some packages)
+    image = image.run_commands("pip install --upgrade pip setuptools wheel")
+
+    # Install chumpy separately with --no-build-isolation (has broken setup.py)
+    image = image.run_commands("pip install --no-build-isolation chumpy==0.70")
+
     # Install core dependencies before PyTorch3D
     image = image.pip_install(
         "lightning==2.2.0",
@@ -78,11 +84,10 @@ def create_guava_image():
         "colored==2.3.0",
         "rich==14.0.0",
         "opencv-python==4.11.0.86",
-        "chumpy==0.70",
         "tyro==0.8.0",
         "easydict==1.13",
-        "kornia==0.7.0",  # Updated from 0.1.9 for compatibility
-        "transformers==4.40.0",  # Pinned for stability
+        "kornia==0.7.0",
+        "transformers==4.40.0",
         "configer==1.3.1",
         "torchgeometry==0.1.2",
         "pynvml==13.0.1",
