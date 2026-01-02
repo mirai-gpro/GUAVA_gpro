@@ -1,25 +1,32 @@
 import modal
 import os
 
-# 1. GUAVA環境の定義
+# 1. GUAVA環境の定義 (Modal 1.0+ compatible)
 guava_image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .apt_install("libgl1-mesa-glx", "libglib2.0-0", "git")
-    .pip_install(
-        "torch==2.1.0", "numpy", "scipy", "gsplat",
-        "opencv-python", "h5py", "tqdm"
+    modal.Image.from_registry(
+        "nvidia/cuda:11.8.0-devel-ubuntu22.04",
+        add_python="3.10"
     )
-    .pip_install("git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7")
+    .apt_install("libgl1-mesa-glx", "libglib2.0-0", "git", "build-essential", "ninja-build")
+    .pip_install(
+        "torch==2.2.0", "torchvision==0.17.0",
+        index_url="https://download.pytorch.org/whl/cu118",
+    )
+    .pip_install("numpy==1.26.4", "scipy", "opencv-python", "h5py", "tqdm")
+    .run_commands(
+        "pip install 'git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7'",
+        env={"FORCE_CUDA": "1", "TORCH_CUDA_ARCH_LIST": "7.0;7.5;8.0;8.6;8.9;9.0"},
+    )
+    .add_local_dir(".", "/root/guava", copy=False)
 )
 
 app = modal.App("guava-inference")
 
 @app.function(
-    gpu="L4", 
+    gpu="L4",
     image=guava_image,
     # Volumeのルートを /assets にマウント
     volumes={"/assets": modal.Volume.from_name("guava-weights")},
-    mounts=[modal.Mount.from_local_dir(".", remote_path="/root/guava")]
 )
 def run_guava():
     import subprocess

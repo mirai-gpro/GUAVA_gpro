@@ -188,107 +188,6 @@ def list_volume_contents(volume_path: str, max_depth: int = 3) -> str:
 
 
 # ============================================================================
-# Build Submodules Function
-# ============================================================================
-
-@app.function(
-    image=guava_image,
-    gpu="L4",
-    timeout=1800,  # 30 minutes for building
-    mounts=[
-        modal.Mount.from_local_dir(
-            "submodules/diff-gaussian-rasterization-32",
-            remote_path="/build/diff-gaussian-rasterization-32"
-        ),
-        modal.Mount.from_local_dir(
-            "submodules/simple-knn",
-            remote_path="/build/simple-knn"
-        ),
-        modal.Mount.from_local_dir(
-            "submodules/fused-ssim",
-            remote_path="/build/fused-ssim"
-        ),
-    ],
-)
-def build_and_cache_submodules():
-    """
-    Build CUDA submodules. This is a one-time operation.
-    The built packages will be cached in the image layer.
-    """
-    import subprocess
-    import sys
-
-    results = {}
-
-    # Build diff-gaussian-rasterization-32
-    print("Building diff-gaussian-rasterization-32...")
-    os.chdir("/build/diff-gaussian-rasterization-32")
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-e", "."],
-        capture_output=True,
-        text=True,
-        env={**os.environ, "FORCE_CUDA": "1"}
-    )
-    results["diff-gaussian-rasterization-32"] = {
-        "returncode": result.returncode,
-        "stdout": result.stdout[-500:] if result.stdout else "",
-        "stderr": result.stderr[-500:] if result.stderr else "",
-    }
-
-    # Build simple-knn
-    print("Building simple-knn...")
-    os.chdir("/build/simple-knn")
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-e", "."],
-        capture_output=True,
-        text=True,
-        env={**os.environ, "FORCE_CUDA": "1"}
-    )
-    results["simple-knn"] = {
-        "returncode": result.returncode,
-        "stdout": result.stdout[-500:] if result.stdout else "",
-        "stderr": result.stderr[-500:] if result.stderr else "",
-    }
-
-    # Build fused-ssim
-    print("Building fused-ssim...")
-    os.chdir("/build/fused-ssim")
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-e", "."],
-        capture_output=True,
-        text=True,
-        env={**os.environ, "FORCE_CUDA": "1"}
-    )
-    results["fused-ssim"] = {
-        "returncode": result.returncode,
-        "stdout": result.stdout[-500:] if result.stdout else "",
-        "stderr": result.stderr[-500:] if result.stderr else "",
-    }
-
-    # Verify installations
-    print("\nVerifying installations...")
-    try:
-        import diff_gaussian_rasterization_32
-        results["verify_dgr32"] = "OK"
-    except ImportError as e:
-        results["verify_dgr32"] = str(e)
-
-    try:
-        from simple_knn import _C
-        results["verify_simple_knn"] = "OK"
-    except ImportError as e:
-        results["verify_simple_knn"] = str(e)
-
-    try:
-        import fused_ssim
-        results["verify_fused_ssim"] = "OK"
-    except ImportError as e:
-        results["verify_fused_ssim"] = str(e)
-
-    return results
-
-
-# ============================================================================
 # Image with pre-built submodules
 # ============================================================================
 
@@ -313,6 +212,8 @@ guava_full_image = (
     )
     # Final numpy pin after all builds
     .pip_install("numpy==1.26.4")
+    # Add GUAVA source code (Modal 1.0+ uses add_local_dir instead of Mount)
+    .add_local_dir(".", "/app/guava", copy=False)
 )
 
 
@@ -329,9 +230,6 @@ guava_full_image = (
         "/guava_output": guava_output_volume,
         "/weights": guava_weights_volume,
     },
-    mounts=[
-        modal.Mount.from_local_dir(".", remote_path="/app/guava"),
-    ],
 )
 def run_guava_inference(
     data_subpath: str = None,

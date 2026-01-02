@@ -77,6 +77,8 @@ guava_image = (
     )
     # Pin numpy LAST to prevent overwrites
     .pip_install("numpy==1.26.4")
+    # Add GUAVA source code (Modal 1.0+ uses add_local_dir instead of Mount)
+    .add_local_dir(".", "/app/guava", copy=False)
 )
 
 # ============================================================================
@@ -170,7 +172,6 @@ def check_environment():
         "/weights": weights_volume,
         "/ehm": ehm_volume,
     },
-    mounts=[modal.Mount.from_local_dir(".", remote_path="/app/guava")],
     timeout=1800,
 )
 def run_inference_test():
