@@ -20,25 +20,21 @@ import os
 from pathlib import Path
 
 # ============================================================================
-# Image Definition - Built from CUDA devel base
+# Image Definition - Following README exactly
 # ============================================================================
+#
+# README says:
+#   pip install -r requirements.txt
+#   pip install "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7"
+#   cd submodules && pip install diff-gaussian-rasterization-32 simple-knn fused-ssim
+#
 
-def create_guava_image():
-    """
-    Create a Modal image following the official README setup order:
-    1. pip install -r requirements.txt
-    2. pip install pytorch3d
-    3. pip install submodules
-    """
-
-    # Start from NVIDIA CUDA 11.8 devel image (has nvcc and headers)
-    image = modal.Image.from_registry(
+guava_image = (
+    modal.Image.from_registry(
         "nvidia/cuda:11.8.0-devel-ubuntu22.04",
         add_python="3.10"
     )
-
-    # Install system dependencies
-    image = image.apt_install(
+    .apt_install(
         "build-essential",
         "ninja-build",
         "git",
@@ -52,54 +48,11 @@ def create_guava_image():
         "wget",
         "curl",
     )
-
-    # Upgrade pip first
-    image = image.run_commands("pip install --upgrade pip setuptools wheel")
-
-    # Step 1: Install PyTorch first (from requirements.txt)
-    image = image.pip_install(
-        "torch==2.2.0",
-        "torchvision==0.17.0",
-        "torchaudio==2.2.0",
-        index_url="https://download.pytorch.org/whl/cu118",
-    )
-
-    # Step 2: Install requirements.txt dependencies (excluding torch, pytorch3d)
-    # Following README order - requirements first, then pytorch3d
-    image = image.pip_install(
-        "lightning==2.2.0",
-        "roma==1.5.3",
-        "imageio[pyav]",
-        "imageio[ffmpeg]",
-        "lmdb==1.6.2",
-        "plyfile==1.0.3",
-        "omegaconf==2.3.0",
-        "colored==2.3.0",
-        "rich==14.0.0",
-        "opencv-python==4.11.0.86",
-        "tyro==0.8.0",
-        "easydict==1.13",
-        "configer==1.3.1",
-        "torchgeometry==0.1.2",
-        "pynvml==13.0.1",
-        "scipy",
-        "tqdm",
-        "einops",
-        "fvcore",
-        "iopath",
-        "xformers==0.0.24",
-    )
-
-    # Install problematic packages separately
-    image = image.run_commands(
-        "pip install --no-build-isolation chumpy==0.70",
-    )
-    image = image.run_commands(
-        "pip install kornia==0.7.0 transformers==4.40.0",
-    )
-
-    # Step 3: Install PyTorch3D (after requirements, per README)
-    image = image.run_commands(
+    # Copy requirements.txt and install exactly as README says
+    .add_local_file("requirements.txt", "/tmp/requirements.txt", copy=True)
+    .run_commands("pip install -r /tmp/requirements.txt")
+    # Install PyTorch3D as README says
+    .run_commands(
         "pip install 'git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7'",
         env={
             "FORCE_CUDA": "1",
@@ -107,15 +60,7 @@ def create_guava_image():
             "MAX_JOBS": "4",
         },
     )
-
-    # Pin numpy at the end
-    image = image.pip_install("numpy==1.26.4")
-
-    return image
-
-
-# Create the image
-guava_image = create_guava_image()
+)
 
 # ============================================================================
 # Modal App and Volume Configuration
@@ -190,28 +135,23 @@ def list_volume_contents(volume_path: str, max_depth: int = 3) -> str:
 # ============================================================================
 
 # Create image with submodules built in
-# Modal 1.0+: use add_local_dir(copy=True) instead of copy_local_dir
+# README: cd submodules && pip install diff-gaussian-rasterization-32 simple-knn fused-ssim
 guava_full_image = (
     guava_image
-    .add_local_dir("submodules/diff-gaussian-rasterization-32", "/opt/guava/submodules/diff-gaussian-rasterization-32", copy=True)
-    .add_local_dir("submodules/simple-knn", "/opt/guava/submodules/simple-knn", copy=True)
-    .add_local_dir("submodules/fused-ssim", "/opt/guava/submodules/fused-ssim", copy=True)
-    .add_local_dir("submodules/lpipsPyTorch", "/opt/guava/submodules/lpipsPyTorch", copy=True)
+    .add_local_dir("submodules", "/opt/guava/submodules", copy=True)
     .run_commands(
-        "cd /opt/guava/submodules/diff-gaussian-rasterization-32 && pip install -e .",
+        "cd /opt/guava/submodules && pip install diff-gaussian-rasterization-32",
         env={"FORCE_CUDA": "1", "TORCH_CUDA_ARCH_LIST": "7.0;7.5;8.0;8.6;8.9;9.0"},
     )
     .run_commands(
-        "cd /opt/guava/submodules/simple-knn && pip install -e .",
+        "cd /opt/guava/submodules && pip install simple-knn",
         env={"FORCE_CUDA": "1"},
     )
     .run_commands(
-        "cd /opt/guava/submodules/fused-ssim && pip install -e .",
+        "cd /opt/guava/submodules && pip install fused-ssim",
         env={"FORCE_CUDA": "1"},
     )
-    # Final numpy pin after all builds
-    .pip_install("numpy==1.26.4")
-    # Add GUAVA source code (Modal 1.0+ uses add_local_dir instead of Mount)
+    # Add GUAVA source code
     .add_local_dir(".", "/app/guava", copy=False)
 )
 
