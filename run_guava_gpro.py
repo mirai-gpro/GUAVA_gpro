@@ -98,7 +98,14 @@ def run_guava():
     # Set PYTHONPATH for subprocess
     env = os.environ.copy()
     env["PYTHONPATH"] = "/root/GUAVA"
-    subprocess.run(cmd, check=True, env=env)
+
+    # Run with output streaming to see errors
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    for line in process.stdout:
+        print(line, end="")
+    process.wait()
+    if process.returncode != 0:
+        raise RuntimeError(f"Inference failed with exit code {process.returncode}")
     guava_volume.commit()
 
 @app.local_entrypoint()
