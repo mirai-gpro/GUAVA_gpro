@@ -53,6 +53,7 @@ image = (
         "rich==14.0.0", "opencv-python-headless", "xformers==0.0.24",
         "tyro==0.8.0", "onnxruntime-gpu==1.18", "onnx==1.16", "mediapipe==0.10.21",
         "transformers==4.37.0", "configer==1.3.1", "torchgeometry==0.1.2", "pynvml==13.0.1",
+        "colored==2.3.0", "kornia==0.7.0", "easydict==1.13",
         "numpy==1.26.4"
     )
     
