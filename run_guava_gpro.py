@@ -25,15 +25,10 @@ from pathlib import Path
 
 def create_guava_image():
     """
-    Create a Modal image with all GUAVA dependencies properly installed.
-
-    Build order is critical:
-    1. System packages (build-essential, ninja-build)
-    2. PyTorch with CUDA 11.8
-    3. PyTorch3D from source (requires CUDA headers)
-    4. GUAVA submodules (diff-gaussian-rasterization-32, etc.)
-    5. Other Python dependencies
-    6. numpy<2.0 pinned LAST
+    Create a Modal image following the official README setup order:
+    1. pip install -r requirements.txt
+    2. pip install pytorch3d
+    3. pip install submodules
     """
 
     # Start from NVIDIA CUDA 11.8 devel image (has nvcc and headers)
@@ -58,7 +53,10 @@ def create_guava_image():
         "curl",
     )
 
-    # Install PyTorch 2.2.0 with CUDA 11.8
+    # Upgrade pip first
+    image = image.run_commands("pip install --upgrade pip setuptools wheel")
+
+    # Step 1: Install PyTorch first (from requirements.txt)
     image = image.pip_install(
         "torch==2.2.0",
         "torchvision==0.17.0",
@@ -66,13 +64,8 @@ def create_guava_image():
         index_url="https://download.pytorch.org/whl/cu118",
     )
 
-    # Upgrade pip first (needed for some packages)
-    image = image.run_commands("pip install --upgrade pip setuptools wheel")
-
-    # Install chumpy separately with --no-build-isolation (has broken setup.py)
-    image = image.run_commands("pip install --no-build-isolation chumpy==0.70")
-
-    # Install core dependencies before PyTorch3D
+    # Step 2: Install requirements.txt dependencies (excluding torch, pytorch3d)
+    # Following README order - requirements first, then pytorch3d
     image = image.pip_install(
         "lightning==2.2.0",
         "roma==1.5.3",
@@ -86,8 +79,6 @@ def create_guava_image():
         "opencv-python==4.11.0.86",
         "tyro==0.8.0",
         "easydict==1.13",
-        "kornia==0.7.0",
-        "transformers==4.40.0",
         "configer==1.3.1",
         "torchgeometry==0.1.2",
         "pynvml==13.0.1",
@@ -96,9 +87,18 @@ def create_guava_image():
         "einops",
         "fvcore",
         "iopath",
+        "xformers==0.0.24",
     )
 
-    # Build PyTorch3D from source with CUDA support
+    # Install problematic packages separately
+    image = image.run_commands(
+        "pip install --no-build-isolation chumpy==0.70",
+    )
+    image = image.run_commands(
+        "pip install kornia==0.7.0 transformers==4.40.0",
+    )
+
+    # Step 3: Install PyTorch3D (after requirements, per README)
     image = image.run_commands(
         "pip install 'git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7'",
         env={
@@ -108,15 +108,8 @@ def create_guava_image():
         },
     )
 
-    # Pin numpy<2.0 to prevent compatibility issues
-    # This MUST be done after all other installations
+    # Pin numpy at the end
     image = image.pip_install("numpy==1.26.4")
-
-    # Install xformers for attention optimization
-    image = image.pip_install(
-        "xformers==0.0.24",
-        index_url="https://download.pytorch.org/whl/cu118",
-    )
 
     return image
 
