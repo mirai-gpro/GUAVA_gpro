@@ -1,13 +1,3 @@
-"""
-GUAVA 3D Gaussian Splatting Avatar - Modal Deployment
-======================================================
-
-Based on the working main branch version (modal_final_clean.py pattern).
-
-Usage:
-    modal run run_guava_gpro.py
-"""
-
 import modal
 import os
 import subprocess
@@ -20,12 +10,12 @@ guava_volume = modal.Volume.from_name("guava-results", create_if_missing=True)
 image = (
     modal.Image.from_registry("nvidia/cuda:11.8.0-devel-ubuntu22.04", add_python="3.10")
     .apt_install(
-        "git", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg", "wget",
-        "libusb-1.0-0", "build-essential", "ninja-build",
+        "git", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg", "wget", 
+        "libusb-1.0-0", "build-essential", "ninja-build", 
         "clang", "llvm", "libclang-dev"
     )
-
-    # 1. Base dependencies - numpy<2.0 FIRST
+    
+    # 1. Base dependencies
     .run_commands(
         "python -m pip install --upgrade pip setuptools wheel",
         "pip install 'numpy<2.0'"
@@ -36,8 +26,8 @@ image = (
 
     # 2. Build Tools & Core Libraries
     .env({
-        "FORCE_CUDA": "1",
-        "CUDA_HOME": "/usr/local/cuda",
+        "FORCE_CUDA": "1", 
+        "CUDA_HOME": "/usr/local/cuda", 
         "MAX_JOBS": "4",
         "TORCH_CUDA_ARCH_LIST": "8.6",
         "CC": "clang",
@@ -47,15 +37,15 @@ image = (
         "pip install chumpy==0.70 --no-build-isolation",
         "pip install git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7 --no-build-isolation"
     )
-
-    # 3. Submodules Build (copy=True for physical copy)
+    
+    # 3. Submodules Build (copy=True を追加して物理コピー)
     .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=True)
     .run_commands(
         "cd /root/GUAVA/submodules/diff-gaussian-rasterization-32 && pip install . --no-build-isolation",
         "cd /root/GUAVA/submodules/simple-knn && pip install . --no-build-isolation",
         "cd /root/GUAVA/submodules/fused-ssim && pip install . --no-build-isolation"
     )
-
+    
     # 4. Remaining libraries
     .pip_install(
         "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
@@ -65,30 +55,28 @@ image = (
         "transformers==4.37.0", "configer==1.3.1", "torchgeometry==0.1.2", "pynvml==13.0.1",
         "numpy==1.26.4"
     )
-
-    # 5. Project Assets
+    
+    # 5. Project Assets (最後にまとめて追加)
     .add_local_dir("./assets", remote_path="/root/GUAVA/assets")
     .add_local_dir("./main", remote_path="/root/GUAVA/main")
     .add_local_dir("./models", remote_path="/root/GUAVA/models")
 )
 
-app = modal.App("guava-3dgs-avatar")
+app = modal.App("guava-v3-fix-v4")
 
 @app.function(
-    image=image,
-    gpu="a10g",
-    timeout=3600,
+    image=image, 
+    gpu="a10g", 
+    timeout=3600, 
     volumes={"/root/EHM_results": ehm_volume, "/root/GUAVA/outputs": guava_volume},
     env={"MEDIAPIPE_DISABLE_GPU": "1"}
 )
 def run_guava():
     os.chdir("/root/GUAVA")
-
-    # Auto-detect data path
+    
     search_path = "/root/EHM_results/processed_data/driving"
     target_data_path = os.path.join(search_path, "driving") if os.path.exists(os.path.join(search_path, "driving")) else search_path
-
-    # Fix Windows paths in YAML files
+    
     for yaml_file in glob.glob("assets/GUAVA/*.yaml"):
         with open(yaml_file, 'r') as f:
             content = f.read()
