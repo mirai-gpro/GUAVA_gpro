@@ -1,5 +1,3 @@
-
-
 // src/scripts/chat/concierge-controller.ts
 import { CoreController } from './core-controller';
 import { AudioManager } from './audio-manager';
@@ -11,7 +9,7 @@ export class ConciergeController extends CoreController {
   constructor(container: HTMLElement, apiBase: string) {
     super(container, apiBase);
     
-    // ★コンシェルジュモード用のAudioManagerを6.5秒設定で再初期化２
+    // ★コンシェルジュモード用のAudioManagerを6.5秒設定で再初期化
     this.audioManager = new AudioManager(8000);
     
     // コンシェルジュモードに設定
@@ -39,7 +37,7 @@ export class ConciergeController extends CoreController {
   }
 
   // ========================================
-  // 🎯 セッション初期化をオーバーライド(挨拶文を変更)
+  // ?? セッション初期化をオーバーライド(挨拶文を変更)
   // ========================================
   protected async initializeSession() {
     try {
@@ -68,7 +66,7 @@ export class ConciergeController extends CoreController {
       const data = await res.json();
       this.sessionId = data.session_id;
 
-      // ✅ バックエンドからの初回メッセージを使用（長期記憶対応）
+      // ? バックエンドからの初回メッセージを使用（長期記憶対応）
       const greetingText = data.initial_message || this.t('initialGreetingConcierge');
       this.addMessage('assistant', greetingText, null, true);
       
@@ -112,7 +110,7 @@ export class ConciergeController extends CoreController {
   }
 
   // ========================================
-  // 🔧 Socket.IOの初期化をオーバーライド
+  // ?? Socket.IOの初期化をオーバーライド
   // ========================================
   protected initSocket() {
     // @ts-ignore
@@ -120,7 +118,7 @@ export class ConciergeController extends CoreController {
     
     this.socket.on('connect', () => { });
     
-    // ✅ コンシェルジュ版のhandleStreamingSTTCompleteを呼ぶように再登録
+    // ? コンシェルジュ版のhandleStreamingSTTCompleteを呼ぶように再登録
     this.socket.on('transcript', (data: any) => {
       const { text, is_final } = data;
       if (this.isAISpeaking) return;
@@ -138,7 +136,9 @@ export class ConciergeController extends CoreController {
     });
   }
 
-  // コンシェルジュモード固有: アバターアニメーション制御
+  // ========================================
+  // ?? コンシェルジュモード固有: アバターアニメーション制御（修正版）
+  // ========================================
   protected async speakTextGCP(text: string, stopPrevious: boolean = true, autoRestartMic: boolean = false, skipAudio: boolean = false) {
     if (skipAudio || !this.isTTSEnabled || !text) return Promise.resolve();
 
@@ -152,16 +152,39 @@ export class ConciergeController extends CoreController {
     // 親クラスのTTS処理を実行
     await super.speakTextGCP(text, stopPrevious, autoRestartMic, skipAudio);
 
-    // アバターアニメーションを停止
-    this.stopAvatarAnimation();
+    // ★ 修正：音声が実際に終わるまで待つ
+    return new Promise<void>((resolve) => {
+      const handleEnded = () => {
+        console.log('[Concierge] Audio ended, stopping avatar animation');
+        this.stopAvatarAnimation();
+        this.ttsPlayer.removeEventListener('ended', handleEnded);
+        resolve();
+      };
+      
+      // 音声が既に再生中または終了している場合の処理
+      if (this.ttsPlayer.paused || this.ttsPlayer.ended) {
+        console.log('[Concierge] Audio already paused/ended');
+        this.stopAvatarAnimation();
+        resolve();
+      } else {
+        console.log('[Concierge] Waiting for audio to end...');
+        this.ttsPlayer.addEventListener('ended', handleEnded);
+      }
+    });
   }
 
   // 3DGSアバターアニメーション開始
   private startAvatarAnimation() {
+    console.log('[Concierge] startAvatarAnimation called');
     // 3DGS AvatarRenderer APIを使用
     const avatarRenderer = (window as any).avatarRenderer;
     if (avatarRenderer && typeof avatarRenderer.startSpeaking === 'function') {
       avatarRenderer.startSpeaking(this.ttsPlayer);
+      console.log('[Concierge] ttsPlayer state:', {
+        paused: this.ttsPlayer.paused,
+        src: this.ttsPlayer.src ? 'loaded' : 'empty',
+        duration: this.ttsPlayer.duration
+      });
     } else {
       // フォールバック: 従来のCSSアニメーション
       if (this.els.avatarContainer) {
@@ -172,6 +195,7 @@ export class ConciergeController extends CoreController {
 
   // アバターアニメーション停止
   private stopAvatarAnimation() {
+    console.log('[Concierge] stopAvatarAnimation called');
     // 3DGS AvatarRenderer APIを使用
     const avatarRenderer = (window as any).avatarRenderer;
     if (avatarRenderer && typeof avatarRenderer.stopSpeaking === 'function') {
@@ -185,13 +209,13 @@ export class ConciergeController extends CoreController {
   }
 
   // ========================================
-  // 🎯 UI言語更新をオーバーライド(挨拶文をコンシェルジュ用に)
+  // ?? UI言語更新をオーバーライド(挨拶文をコンシェルジュ用に)
   // ========================================
   protected updateUILanguage() {
     // 親クラスのupdateUILanguageを実行
     super.updateUILanguage();
     
-    // ✅ 初期メッセージをコンシェルジュ用に再設定
+    // ? 初期メッセージをコンシェルジュ用に再設定
     const initialMessage = this.els.chatArea.querySelector('.message.assistant[data-initial="true"] .message-text');
     if (initialMessage) {
       initialMessage.textContent = this.t('initialGreetingConcierge');
@@ -216,7 +240,7 @@ export class ConciergeController extends CoreController {
   }
 
   // ========================================
-  // 🎯 並行処理フロー: 応答を分割してTTS処理
+  // ?? 並行処理フロー: 応答を分割してTTS処理
   // ========================================
 
   /**
@@ -328,6 +352,9 @@ export class ConciergeController extends CoreController {
             this.stopCurrentAudio();
             this.ttsPlayer.src = firstSentenceAudio;
 
+            // アバターアニメーション開始
+            this.startAvatarAnimation();
+
             await new Promise<void>((resolve) => {
               this.ttsPlayer.onended = () => {
                 this.els.voiceStatus.innerHTML = this.t('voiceStatusStopped');
@@ -355,13 +382,21 @@ export class ConciergeController extends CoreController {
                   this.ttsPlayer.onended = () => {
                     this.els.voiceStatus.innerHTML = this.t('voiceStatusStopped');
                     this.els.voiceStatus.className = 'voice-status stopped';
+                    // アバターアニメーション停止
+                    this.stopAvatarAnimation();
                     resolve();
                   };
                   this.els.voiceStatus.innerHTML = this.t('voiceStatusSpeaking');
                   this.els.voiceStatus.className = 'voice-status speaking';
                   this.ttsPlayer.play();
                 });
+              } else {
+                // 残りの音声がない場合はここでアニメーション停止
+                this.stopAvatarAnimation();
               }
+            } else {
+              // 残りのセンテンスがない場合はここでアニメーション停止
+              this.stopAvatarAnimation();
             }
           }
         }
@@ -371,13 +406,15 @@ export class ConciergeController extends CoreController {
     } catch (error) {
       console.error('[TTS並行処理エラー]', error);
       this.isAISpeaking = false;
+      // エラー時はアニメーション停止
+      this.stopAvatarAnimation();
       // エラー時はフォールバック
       await this.speakTextGCP(response, true, false, isTextInput);
     }
   }
 
   // ========================================
-  // 🎯 コンシェルジュモード専用: 音声入力完了時の即答処理
+  // ?? コンシェルジュモード専用: 音声入力完了時の即答処理
   // ========================================
   protected async handleStreamingSTTComplete(transcript: string) {
     this.stopStreamingSTT();
@@ -417,7 +454,7 @@ export class ConciergeController extends CoreController {
         return;
     }
 
-    // ✅ 修正: 即答を「はい」だけに簡略化
+    // ? 修正: 即答を「はい」だけに簡略化
     const ackText = this.t('ackYes'); // 「はい」のみ
     const preGeneratedAudio = this.preGeneratedAcks.get(ackText);
     
@@ -436,7 +473,7 @@ export class ConciergeController extends CoreController {
     
     this.addMessage('assistant', ackText);
     
-    // ✅ 修正: オウム返しパターンを削除し、すぐにLLMへ送信
+    // ? 修正: オウム返しパターンを削除し、すぐにLLMへ送信
     (async () => {
       try {
         if (firstAckPromise) await firstAckPromise;
@@ -459,7 +496,7 @@ export class ConciergeController extends CoreController {
   }
 
   // ========================================
-  // 🎯 コンシェルジュモード専用: メッセージ送信処理
+  // ?? コンシェルジュモード専用: メッセージ送信処理
   // ========================================
   protected async sendMessage() {
     let firstAckPromise: Promise<void> | null = null; 
@@ -475,7 +512,7 @@ export class ConciergeController extends CoreController {
     this.els.micBtn.disabled = true; 
     this.els.userInput.disabled = true;
 
-    // ✅ テキスト入力時も「はい」だけに簡略化
+    // ? テキスト入力時も「はい」だけに簡略化
     if (!this.isFromVoiceInput) {
       this.addMessage('user', message);
       const textLength = message.trim().replace(/\s+/g, '').length;
@@ -489,7 +526,7 @@ export class ConciergeController extends CoreController {
       
       this.els.userInput.value = '';
       
-      // ✅ 修正: 即答を「はい」だけに
+      // ? 修正: 即答を「はい」だけに
       const ackText = this.t('ackYes');
       this.currentAISpeech = ackText;
       this.addMessage('assistant', ackText);
@@ -511,13 +548,13 @@ export class ConciergeController extends CoreController {
       }   
       if (firstAckPromise) await firstAckPromise;
       
-      // ✅ 修正: オウム返しパターンを削除
+      // ? 修正: オウム返しパターンを削除
       // (generateFallbackResponse, additionalResponse の呼び出しを削除)
     }
 
     this.isFromVoiceInput = false;
     
-    // ✅ 待機アニメーションは6.5秒後に表示(LLM送信直前にタイマースタート)
+    // ? 待機アニメーションは6.5秒後に表示(LLM送信直前にタイマースタート)
     if (this.waitOverlayTimer) clearTimeout(this.waitOverlayTimer);
     let responseReceived = false;
     
@@ -542,12 +579,12 @@ export class ConciergeController extends CoreController {
       });
       const data = await response.json();
       
-      // ✅ レスポンス到着フラグを立てる
+      // ? レスポンス到着フラグを立てる
       responseReceived = true;
       
       if (this.sessionId !== currentSessionId) return;
       
-      // ✅ タイマーをクリアしてアニメーションを非表示
+      // ? タイマーをクリアしてアニメーションを非表示
       if (this.waitOverlayTimer) {
         clearTimeout(this.waitOverlayTimer);
         this.waitOverlayTimer = null;
@@ -681,11 +718,11 @@ export class ConciergeController extends CoreController {
                     this.ttsPlayer.src = remainingAudio;                    
                     await new Promise<void>((resolve) => { 
                       this.ttsPlayer.onended = () => { 
-                        this.els.voiceStatus.innerHTML = '🎤 音声認識: 停止中'; 
+                        this.els.voiceStatus.innerHTML = '$D83C$DFA4 音声認識: 停止中'; 
                         this.els.voiceStatus.className = 'voice-status stopped'; 
                         resolve(); 
                       }; 
-                      this.els.voiceStatus.innerHTML = '📊 音声再生中...'; 
+                      this.els.voiceStatus.innerHTML = '$D83D$DCCA 音声再生中...'; 
                       this.els.voiceStatus.className = 'voice-status speaking'; 
                       this.ttsPlayer.play(); 
                     });
