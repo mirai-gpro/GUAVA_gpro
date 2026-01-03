@@ -8,31 +8,25 @@ ehm_volume = modal.Volume.from_name("ehm-tracker-output")
 guava_volume = modal.Volume.from_name("guava-results", create_if_missing=True)
 
 image = (
-    # CUDA devel image needed for building 3DGS submodules (per README: CUDA 11.8)
-    modal.Image.from_registry("nvidia/cuda:11.8.0-devel-ubuntu22.04", add_python="3.10")
+    # modal_final_clean.py pattern: debian_slim
+    modal.Image.debian_slim(python_version="3.10")
     .apt_install(
         # modal_final_clean.py pattern
         "git", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg",
         "libsm6", "libxext6", "libxrender-dev", "libusb-1.0-0", "libasound2", "wget",
-        # Additional for CUDA builds
-        "build-essential", "ninja-build"
+        # CUDA toolkit for submodule builds (per README: CUDA 11.8)
+        "nvidia-cuda-toolkit", "build-essential", "ninja-build"
     )
-    # Fix pip environment (cuda image has minimal setup, unlike debian_slim)
-    .run_commands("pip install --upgrade pip setuptools wheel")
-    # Install numpy first (chumpy dependency)
-    .pip_install("numpy==1.23.5")
-    # chumpy needs --no-build-isolation (setup.py does 'import pip' which fails in isolated env)
-    .run_commands("pip install chumpy --no-build-isolation")
-    # Rest of packages (modal_final_clean.py pattern)
+    # modal_final_clean.py pattern: pip_install
     .pip_install(
         "torch", "torchvision", "torchaudio",
-        "opencv-python-headless", "protobuf==3.20.3", "mediapipe==0.10.11",
-        "smplx[all]", "pyrender", "trimesh", "ninja", "pyyaml", "scipy",
-        "tqdm", "tyro", "rich", "imageio", "imageio-ffmpeg",
+        "numpy==1.23.5", "chumpy", "opencv-python-headless",
+        "protobuf==3.20.3", "mediapipe==0.10.11", "smplx[all]", "pyrender", "trimesh", "ninja",
+        "pyyaml", "scipy", "tqdm", "tyro", "rich", "imageio", "imageio-ffmpeg",
         "fvcore", "iopath", "lmdb", "onnxruntime-gpu", "roma", "transformers"
     )
     # PyTorch3D (per README: v0.7.7)
-    .env({"FORCE_CUDA": "1", "CUDA_HOME": "/usr/local/cuda", "TORCH_CUDA_ARCH_LIST": "8.6"})
+    .env({"FORCE_CUDA": "1", "TORCH_CUDA_ARCH_LIST": "8.6"})
     .pip_install("git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7")
     # GUAVA-specific packages
     .pip_install("lightning==2.2.0", "xformers", "open3d", "plyfile", "omegaconf", "configer", "torchgeometry", "pynvml")
@@ -62,9 +56,6 @@ app = modal.App("guava-final")
 )
 def run_guava():
     os.chdir("/root/GUAVA")
-
-    # modal_final_clean.py pattern: shutil.copy for file surgery (no file writing)
-    # This avoids \r corruption that occurred with open/write/re.sub
 
     # Physical file check (modal_final_clean.py pattern)
     required_files = ["main/test.py"]
