@@ -316,6 +316,10 @@ class AvatarRenderer {
 
       const midFreqAvg = dataArray.slice(10, 30).reduce((a, b) => a + b, 0) / 20;
       this.lipSyncParams.lipSync = Math.min(midFreqAvg / 200, 1);
+      
+      if (lowFreqAvg > 10) {
+        console.log('[LipSync] Audio detected:', { lowFreqAvg, jawOpen: this.lipSyncParams.jawOpen });
+      }
     } else {
       const time = performance.now() / 1000;
       this.lipSyncParams.jawOpen = Math.abs(Math.sin(time * 8)) * 0.6;
@@ -343,6 +347,7 @@ class AvatarRenderer {
   }
 
   public startSpeaking(audioElement?: HTMLAudioElement) {
+    console.log('[AvatarRenderer] startSpeaking called, isLoaded:', this.isLoaded);
     this.isSpeaking = true;
     this.container.classList.add('speaking');
 
@@ -354,6 +359,7 @@ class AvatarRenderer {
         this.audioAnalyser.fftSize = 256;
         source.connect(this.audioAnalyser);
         this.audioAnalyser.connect(this.audioContext.destination);
+        console.log('[AvatarRenderer] Audio analyser connected');
       } catch (e) {
         console.warn('[AvatarRenderer] Could not create audio analyser:', e);
       }
@@ -361,6 +367,7 @@ class AvatarRenderer {
   }
 
   public stopSpeaking() {
+    console.log('[AvatarRenderer] stopSpeaking called');
     this.isSpeaking = false;
     this.container.classList.remove('speaking');
 
