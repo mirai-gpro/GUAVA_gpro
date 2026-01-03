@@ -19,12 +19,16 @@ image = (
     )
     # Fix pip environment (cuda image has minimal setup, unlike debian_slim)
     .run_commands("pip install --upgrade pip setuptools wheel")
-    # modal_final_clean.py pattern: simple pip_install
+    # Install numpy first (chumpy dependency)
+    .pip_install("numpy==1.23.5")
+    # chumpy needs --no-build-isolation (setup.py does 'import pip' which fails in isolated env)
+    .run_commands("pip install chumpy --no-build-isolation")
+    # Rest of packages (modal_final_clean.py pattern)
     .pip_install(
         "torch", "torchvision", "torchaudio",
-        "numpy==1.23.5", "chumpy", "opencv-python-headless",
-        "protobuf==3.20.3", "mediapipe==0.10.11", "smplx[all]", "pyrender", "trimesh", "ninja",
-        "pyyaml", "scipy", "tqdm", "tyro", "rich", "imageio", "imageio-ffmpeg",
+        "opencv-python-headless", "protobuf==3.20.3", "mediapipe==0.10.11",
+        "smplx[all]", "pyrender", "trimesh", "ninja", "pyyaml", "scipy",
+        "tqdm", "tyro", "rich", "imageio", "imageio-ffmpeg",
         "fvcore", "iopath", "lmdb", "onnxruntime-gpu", "roma", "transformers"
     )
     # PyTorch3D (per README: v0.7.7)
