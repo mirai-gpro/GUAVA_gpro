@@ -140,9 +140,11 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
  * AvatarRenderer - 3DGS Avatar with SMPLX-based Lip Sync
  *
  * Architecture:
- * - gsplat.js renderer for Gaussian Splatting (Spark commented out for localhost testing)
+ * - Three.js PLY Loader for Gaussian Splatting visualization (temporary for localhost testing)
  * - SMPLX deformation via matrix operations (no NN at runtime)
  * - Audio frequency analysis for lip sync
+ * 
+ * NOTE: This uses Three.js Points as a fallback. Will use Spark in production.
  */
 class AvatarRenderer {
   private container: HTMLElement;
@@ -153,8 +155,7 @@ class AvatarRenderer {
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
   private controls: OrbitControls;
-  private splatMesh: any = null;
-  private viewer: any = null; // gsplat.js Viewer
+  private splatMesh: THREE.Points | null = null; // Three.js Points for PLY
   private isLoaded: boolean = false;
   private isSpeaking: boolean = false;
   private animationFrameId: number = 0;
@@ -229,28 +230,36 @@ class AvatarRenderer {
     const plyPath = this.container.dataset.plyPath || '/assets/avatar/GS_canonical_10k.ply';
 
     try {
-      // ★ gsplat.js版の実装
-      // gsplat.jsはESMとして直接importする
-      const GSPLAT = await import('https://cdn.jsdelivr.net/npm/gsplat@latest/dist/gsplat.module.js');
-
-      this.viewer = new GSPLAT.Viewer({
-        canvas: this.canvas,
-        cameraUp: [0, 1, 0],
-      });
-
+      // ★ gsplat.js版の実装 - Three.jsベースの簡易実装
+      // gsplat.jsの代わりに、Three.jsで簡易的な3DGS表示を実装
+      
       // PLYファイルをロード
-      await this.viewer.addScene(plyPath, {
-        format: 'ply',
-        position: [0, -0.3, 0],
-        scale: [1.5, 1.5, 1.5],
+      const response = await fetch(plyPath);
+      const arrayBuffer = await response.arrayBuffer();
+      
+      // PLYローダーをThree.jsで使用
+      const { PLYLoader } = await import('three/examples/jsm/loaders/PLYLoader.js');
+      
+      const loader = new PLYLoader();
+      const geometry = loader.parse(arrayBuffer);
+      
+      // ポイントクラウドマテリアル
+      const material = new THREE.PointsMaterial({
+        size: 0.01,
+        vertexColors: true,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.9
       });
-
-      // カメラ位置を設定
-      this.viewer.camera.position.set(0, 0, 2);
-
-      // gsplat.jsは自動的にレンダリングを開始するため、
-      // Three.jsのレンダリングループは不要になる可能性がある
-      // ただし、リップシンクのためにアニメーションループは継続
+      
+      // メッシュを作成
+      this.splatMesh = new THREE.Points(geometry, material);
+      
+      // Center and scale the avatar
+      this.splatMesh.position.set(0, -0.3, 0);
+      this.splatMesh.scale.setScalar(1.5);
+      
+      this.scene.add(this.splatMesh);
 
       // Hide fallback, show 3DGS
       this.fallback.classList.add('hidden');
@@ -262,7 +271,7 @@ class AvatarRenderer {
         this.status.classList.remove('visible');
       }, 2000);
 
-      console.log('[AvatarRenderer] 3DGS avatar loaded successfully with gsplat.js');
+      console.log('[AvatarRenderer] 3DGS avatar loaded successfully with Three.js PLY loader');
 
       // ★ Spark版（コメントアウト）
       /*
@@ -313,11 +322,6 @@ class AvatarRenderer {
     this.camera.aspect = rect.width / rect.height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(rect.width, rect.height);
-
-    // gsplat.js Viewerのリサイズ処理
-    if (this.viewer && typeof this.viewer.resize === 'function') {
-      this.viewer.resize();
-    }
   }
 
   private animate() {
@@ -330,12 +334,8 @@ class AvatarRenderer {
 
     this.controls.update();
     
-    // gsplat.jsは自動レンダリングするため、
-    // Three.jsのレンダリングは必要ない場合がある
-    // ただし、フォールバック用に残しておく
-    if (!this.viewer) {
-      this.renderer.render(this.scene, this.camera);
-    }
+    // Three.jsのレンダリング
+    this.renderer.render(this.scene, this.camera);
   }
 
   private updateLipSyncAnimation() {
@@ -368,6 +368,24 @@ class AvatarRenderer {
   }
 
   private applyLipSyncDeformation() {
+    if (!this.splatMesh) return;
+
+    // Three.js Points版の変形処理
+    // Simplified deformation: scale Y based on jaw openness
+    const baseScale = 1.5;
+    const jawScale = 1 + this.lipSyncParams.jawOpen * 0.02;
+
+    this.splatMesh.scale.set(
+      baseScale,
+      baseScale * jawScale,
+      baseScale
+    );
+
+    // Subtle head movement for more natural appearance
+    const time = performance.now() / 1000;
+    this.splatMesh.rotation.y = Math.sin(time * 0.5) * 0.02;
+    this.splatMesh.rotation.x = Math.sin(time * 0.3) * 0.01;
+
     // ★ Spark版の変形処理（コメントアウト）
     /*
     if (!this.splatMesh) return;
@@ -389,15 +407,6 @@ class AvatarRenderer {
     this.splatMesh.rotation.y = Math.sin(time * 0.5) * 0.02;
     this.splatMesh.rotation.x = Math.sin(time * 0.3) * 0.01;
     */
-
-    // gsplat.js版では、カメラの微調整で代用
-    if (this.viewer && this.viewer.camera) {
-      const time = performance.now() / 1000;
-      // 微妙なカメラの揺れでリップシンク風の効果を演出
-      const offsetY = Math.sin(time * 8) * 0.002 * this.lipSyncParams.jawOpen;
-      this.viewer.camera.position.y = offsetY;
-    }
-  }
 
   // ========================================
   // Public API
@@ -439,17 +448,9 @@ class AvatarRenderer {
     this.lipSyncParams.lipSync = 0;
 
     // Reset transforms
-    // Spark版
-    /*
     if (this.splatMesh) {
       this.splatMesh.scale.setScalar(1.5);
       this.splatMesh.rotation.set(0, 0, 0);
-    }
-    */
-
-    // gsplat.js版
-    if (this.viewer && this.viewer.camera) {
-      this.viewer.camera.position.y = 0;
     }
   }
 
@@ -480,18 +481,19 @@ class AvatarRenderer {
       this.audioContext.close();
     }
 
-    // Spark版
+    if (this.splatMesh) {
+      this.scene.remove(this.splatMesh);
+      if (this.splatMesh.geometry) this.splatMesh.geometry.dispose();
+      if (this.splatMesh.material) this.splatMesh.material.dispose();
+    }
+
+    // ★ Spark版（コメントアウト）
     /*
     if (this.splatMesh) {
       this.scene.remove(this.splatMesh);
       this.splatMesh.dispose?.();
     }
     */
-
-    // gsplat.js版
-    if (this.viewer && typeof this.viewer.dispose === 'function') {
-      this.viewer.dispose();
-    }
 
     this.renderer.dispose();
     this.controls.dispose();
