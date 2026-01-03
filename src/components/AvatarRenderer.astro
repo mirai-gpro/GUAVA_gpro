@@ -307,20 +307,26 @@ class AvatarRenderer {
   private updateLipSyncAnimation() {
     if (!this.isLoaded) return;
 
+    let hasAudio = false;
+
     if (this.audioAnalyser) {
       const dataArray = new Uint8Array(this.audioAnalyser.frequencyBinCount);
       this.audioAnalyser.getByteFrequencyData(dataArray);
 
       const lowFreqAvg = dataArray.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
-      this.lipSyncParams.jawOpen = Math.min(lowFreqAvg / 180, 1);
-
       const midFreqAvg = dataArray.slice(10, 30).reduce((a, b) => a + b, 0) / 20;
-      this.lipSyncParams.lipSync = Math.min(midFreqAvg / 200, 1);
-      
-      if (lowFreqAvg > 10) {
-        console.log('[LipSync] Audio detected:', { lowFreqAvg, jawOpen: this.lipSyncParams.jawOpen });
+
+      // 音声が検出された場合
+      if (lowFreqAvg > 5 || midFreqAvg > 5) {
+        this.lipSyncParams.jawOpen = Math.min(lowFreqAvg / 180, 1);
+        this.lipSyncParams.lipSync = Math.min(midFreqAvg / 200, 1);
+        hasAudio = true;
+        console.log('[LipSync] Audio detected:', { lowFreqAvg, midFreqAvg, jawOpen: this.lipSyncParams.jawOpen });
       }
-    } else {
+    }
+    
+    // 音声が検出されない場合はサイン波アニメーション
+    if (!hasAudio) {
       const time = performance.now() / 1000;
       this.lipSyncParams.jawOpen = Math.abs(Math.sin(time * 8)) * 0.6;
       this.lipSyncParams.lipSync = Math.abs(Math.sin(time * 12)) * 0.4;
@@ -333,7 +339,7 @@ class AvatarRenderer {
     if (!this.splatMesh) return;
 
     const baseScale = 1.5;
-    const jawScale = 1 + this.lipSyncParams.jawOpen * 0.02;
+    const jawScale = 1 + this.lipSyncParams.jawOpen * 0.15; // 0.02から0.15に増やして動きを目立たせる
 
     this.splatMesh.scale.set(
       baseScale,
@@ -342,8 +348,8 @@ class AvatarRenderer {
     );
 
     const time = performance.now() / 1000;
-    this.splatMesh.rotation.y = Math.sin(time * 0.5) * 0.02;
-    this.splatMesh.rotation.x = Math.sin(time * 0.3) * 0.01;
+    this.splatMesh.rotation.y = Math.sin(time * 0.5) * 0.05; // 0.02から0.05に増やして動きを目立たせる
+    this.splatMesh.rotation.x = Math.sin(time * 0.3) * 0.03; // 0.01から0.03に増やして動きを目立たせる
   }
 
   public startSpeaking(audioElement?: HTMLAudioElement) {
