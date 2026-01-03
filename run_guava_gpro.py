@@ -48,6 +48,8 @@ image = (
         "torchaudio==2.2.0",
         index_url="https://download.pytorch.org/whl/cu118",
     )
+    # Upgrade pip/setuptools/wheel before chumpy (--no-build-isolation needs wheel in env)
+    .run_commands("pip install --upgrade pip setuptools wheel")
     # chumpy needs --no-build-isolation (setup.py does 'import pip')
     .run_commands("pip install chumpy --no-build-isolation")
     # Core dependencies (modal_app.py pattern)
