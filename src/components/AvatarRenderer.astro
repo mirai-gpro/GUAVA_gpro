@@ -228,7 +228,7 @@ class AvatarRenderer {
 
     try {
       // Dynamic import of Spark
-      const { SplatMesh } = await import('@aspect-ux/spark');
+      const { SplatMesh } = await import('@sparkjsdev/spark');
 
       this.splatMesh = new SplatMesh();
       await this.splatMesh.load(plyPath);
