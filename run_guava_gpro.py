@@ -86,21 +86,21 @@ image = (
         "pyrender",
         "trimesh",
     )
-    # PyTorch3D from source with CUDA (--no-build-isolation to access torch)
+    # PyTorch3D from source with CUDA (modal_app.py pattern: run_commands with env)
     .run_commands(
-        "pip install --no-build-isolation 'git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7'",
+        "pip install 'git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7'",
         env={
             "FORCE_CUDA": "1",
             "TORCH_CUDA_ARCH_LIST": "7.0;7.5;8.0;8.6;8.9;9.0",
             "MAX_JOBS": "4",
         },
     )
-    # Submodules build (per README, --no-build-isolation to access torch)
+    # Submodules build (per README)
     .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=True)
     .run_commands(
-        "cd /root/GUAVA/submodules/diff-gaussian-rasterization-32 && pip install --no-build-isolation .",
-        "cd /root/GUAVA/submodules/simple-knn && pip install --no-build-isolation .",
-        "cd /root/GUAVA/submodules/fused-ssim && pip install --no-build-isolation .",
+        "cd /root/GUAVA/submodules/diff-gaussian-rasterization-32 && pip install .",
+        "cd /root/GUAVA/submodules/simple-knn && pip install .",
+        "cd /root/GUAVA/submodules/fused-ssim && pip install .",
         env={
             "FORCE_CUDA": "1",
             "TORCH_CUDA_ARCH_LIST": "7.0;7.5;8.0;8.6;8.9;9.0",
