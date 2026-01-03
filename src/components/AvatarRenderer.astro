@@ -363,8 +363,8 @@ class AvatarRenderer {
     }
 
     // Apply deformation to Gaussian positions
-    // gsplat.jsではまだ実装が難しいため、将来の拡張用にコメント
-    // this.applyLipSyncDeformation();
+    // Three.jsのPointsでも同様の変形を適用
+    this.applyLipSyncDeformation();
   }
 
   private applyLipSyncDeformation() {
