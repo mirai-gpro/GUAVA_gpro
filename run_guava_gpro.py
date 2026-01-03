@@ -48,6 +48,8 @@ image = (
         "torchaudio==2.2.0",
         index_url="https://download.pytorch.org/whl/cu118",
     )
+    # chumpy needs --no-build-isolation (setup.py does 'import pip')
+    .run_commands("pip install chumpy --no-build-isolation")
     # Core dependencies (modal_app.py pattern)
     .pip_install(
         "lightning==2.2.0",
@@ -61,7 +63,6 @@ image = (
         "colored==2.3.0",
         "rich==14.0.0",
         "opencv-python==4.11.0.86",
-        "chumpy==0.70",
         "xformers==0.0.24",
         "gradio",
         "tyro==0.8.0",
