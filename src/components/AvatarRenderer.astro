@@ -1,0 +1,435 @@
+---
+// AvatarRenderer.astro - 3DGS Avatar with SMPLX Lip Sync
+export interface Props {
+  plyPath?: string;
+  quality?: 'low' | 'medium' | 'high';
+}
+
+const {
+  plyPath = '/assets/avatar/GS_canonical_10k.ply',
+  quality = 'medium'
+} = Astro.props;
+
+const qualitySettings = {
+  low: { gaussians: 5000, size: '340KB' },
+  medium: { gaussians: 10000, size: '680KB' },
+  high: { gaussians: 50000, size: '3.4MB' }
+};
+---
+
+<div class="avatar-renderer" data-ply-path={plyPath} data-quality={quality}>
+  <canvas id="avatarCanvas"></canvas>
+  <div class="avatar-fallback" id="avatarFallback">
+    <img src="/images/avatar-anime.png" alt="AI Avatar" class="fallback-img" />
+  </div>
+  <div class="avatar-status" id="avatarStatus">
+    <span class="status-dot"></span>
+    <span class="status-text">3DGS Loading...</span>
+  </div>
+</div>
+
+<style>
+.avatar-renderer {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#avatarCanvas {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+}
+
+.avatar-fallback {
+  width: 110px;
+  height: 110px;
+  position: relative;
+  z-index: 2;
+  transition: opacity 0.5s ease;
+}
+
+.avatar-fallback.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fallback-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 4px 6px rgba(0,0,0,0.2));
+}
+
+.avatar-renderer.speaking .fallback-img {
+  animation: breathe 1s infinite alternate ease-in-out;
+  filter: drop-shadow(0 0 15px rgba(6, 182, 212, 0.6));
+}
+
+@keyframes breathe {
+  0% { transform: scale(1); }
+  100% { transform: scale(1.05) translateY(-2px); }
+}
+
+.avatar-status {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.6);
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 10px;
+  color: white;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 0.3s;
+  z-index: 10;
+}
+
+.avatar-status.visible {
+  opacity: 1;
+}
+
+.avatar-status.loaded {
+  background: rgba(6, 182, 212, 0.8);
+}
+
+.avatar-status.error {
+  background: rgba(239, 68, 68, 0.8);
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fbbf24;
+  animation: pulse 1.5s infinite;
+}
+
+.avatar-status.loaded .status-dot {
+  background: #34d399;
+  animation: none;
+}
+
+.avatar-status.error .status-dot {
+  background: #f87171;
+  animation: none;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+</style>
+
+<script>
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+
+/**
+ * AvatarRenderer - 3DGS Avatar with SMPLX-based Lip Sync
+ *
+ * Architecture:
+ * - Spark 3DGS renderer for Gaussian Splatting
+ * - SMPLX deformation via matrix operations (no NN at runtime)
+ * - Audio frequency analysis for lip sync
+ */
+class AvatarRenderer {
+  private container: HTMLElement;
+  private canvas: HTMLCanvasElement;
+  private fallback: HTMLElement;
+  private status: HTMLElement;
+  private scene: THREE.Scene;
+  private camera: THREE.PerspectiveCamera;
+  private renderer: THREE.WebGLRenderer;
+  private controls: OrbitControls;
+  private splatMesh: any = null;
+  private isLoaded: boolean = false;
+  private isSpeaking: boolean = false;
+  private animationFrameId: number = 0;
+  private audioAnalyser: AnalyserNode | null = null;
+  private audioContext: AudioContext | null = null;
+
+  // SMPLX parameters for lip sync
+  private lipSyncParams = {
+    jawOpen: 0,      // 0-1: mouth openness
+    lipSync: 0,      // 0-1: lip movement intensity
+    expression: 0.5  // 0-1: expression blend
+  };
+
+  constructor(container: HTMLElement) {
+    this.container = container;
+    this.canvas = container.querySelector('#avatarCanvas') as HTMLCanvasElement;
+    this.fallback = container.querySelector('#avatarFallback') as HTMLElement;
+    this.status = container.querySelector('#avatarStatus') as HTMLElement;
+
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+    this.renderer = new THREE.WebGLRenderer({
+      canvas: this.canvas,
+      antialias: true,
+      alpha: true
+    });
+    this.controls = new OrbitControls(this.camera, this.canvas);
+
+    this.init();
+  }
+
+  private init() {
+    // Renderer setup
+    const rect = this.container.getBoundingClientRect();
+    this.renderer.setSize(rect.width, rect.height);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setClearColor(0x000000, 0);
+
+    // Camera
+    this.camera.position.set(0, 0, 2);
+    this.camera.aspect = rect.width / rect.height;
+    this.camera.updateProjectionMatrix();
+
+    // Controls
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.05;
+    this.controls.enableZoom = false;
+    this.controls.enablePan = false;
+
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    this.scene.add(ambientLight);
+
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(1, 1, 1);
+    this.scene.add(directionalLight);
+
+    // Show loading status
+    this.updateStatus('loading', '3DGS Loading...');
+
+    // Try to load 3DGS
+    this.loadGaussianAvatar();
+
+    // Start render loop
+    this.animate();
+
+    // Handle resize
+    window.addEventListener('resize', () => this.handleResize());
+  }
+
+  private async loadGaussianAvatar() {
+    const plyPath = this.container.dataset.plyPath || '/assets/avatar/GS_canonical_10k.ply';
+
+    try {
+      // Dynamic import of Spark
+      const { SplatMesh } = await import('@aspect-ux/spark');
+
+      this.splatMesh = new SplatMesh();
+      await this.splatMesh.load(plyPath);
+
+      // Center and scale the avatar
+      this.splatMesh.position.set(0, -0.3, 0);
+      this.splatMesh.scale.setScalar(1.5);
+
+      this.scene.add(this.splatMesh);
+
+      // Hide fallback, show 3DGS
+      this.fallback.classList.add('hidden');
+      this.isLoaded = true;
+      this.updateStatus('loaded', '3DGS Ready');
+
+      // Hide status after 2 seconds
+      setTimeout(() => {
+        this.status.classList.remove('visible');
+      }, 2000);
+
+      console.log('[AvatarRenderer] 3DGS avatar loaded successfully');
+
+    } catch (error) {
+      console.warn('[AvatarRenderer] Failed to load 3DGS, using fallback:', error);
+      this.updateStatus('error', 'Using 2D Avatar');
+
+      // Keep fallback visible
+      setTimeout(() => {
+        this.status.classList.remove('visible');
+      }, 3000);
+    }
+  }
+
+  private updateStatus(state: 'loading' | 'loaded' | 'error', text: string) {
+    this.status.classList.remove('loaded', 'error');
+    this.status.classList.add('visible', state);
+    const textEl = this.status.querySelector('.status-text');
+    if (textEl) textEl.textContent = text;
+  }
+
+  private handleResize() {
+    const rect = this.container.getBoundingClientRect();
+    this.camera.aspect = rect.width / rect.height;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(rect.width, rect.height);
+  }
+
+  private animate() {
+    this.animationFrameId = requestAnimationFrame(() => this.animate());
+
+    // Update lip sync animation
+    if (this.isSpeaking) {
+      this.updateLipSyncAnimation();
+    }
+
+    this.controls.update();
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  private updateLipSyncAnimation() {
+    if (!this.splatMesh || !this.isLoaded) return;
+
+    // Get audio frequency data if available
+    if (this.audioAnalyser) {
+      const dataArray = new Uint8Array(this.audioAnalyser.frequencyBinCount);
+      this.audioAnalyser.getByteFrequencyData(dataArray);
+
+      // Low frequency = mouth movement
+      const lowFreqAvg = dataArray.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
+      this.lipSyncParams.jawOpen = Math.min(lowFreqAvg / 180, 1);
+
+      // Mid frequency = lip detail
+      const midFreqAvg = dataArray.slice(10, 30).reduce((a, b) => a + b, 0) / 20;
+      this.lipSyncParams.lipSync = Math.min(midFreqAvg / 200, 1);
+    } else {
+      // Fallback: sine wave animation
+      const time = performance.now() / 1000;
+      this.lipSyncParams.jawOpen = Math.abs(Math.sin(time * 8)) * 0.6;
+      this.lipSyncParams.lipSync = Math.abs(Math.sin(time * 12)) * 0.4;
+    }
+
+    // Apply deformation to Gaussian positions
+    // In full implementation, this would use SMPLX LBS matrices
+    this.applyLipSyncDeformation();
+  }
+
+  private applyLipSyncDeformation() {
+    if (!this.splatMesh) return;
+
+    // Simplified deformation: scale Y based on jaw openness
+    // Full implementation would transform individual Gaussian positions
+    // using SMPLX blend shapes and LBS weights
+    const baseScale = 1.5;
+    const jawScale = 1 + this.lipSyncParams.jawOpen * 0.02;
+
+    this.splatMesh.scale.set(
+      baseScale,
+      baseScale * jawScale,
+      baseScale
+    );
+
+    // Subtle head movement for more natural appearance
+    const time = performance.now() / 1000;
+    this.splatMesh.rotation.y = Math.sin(time * 0.5) * 0.02;
+    this.splatMesh.rotation.x = Math.sin(time * 0.3) * 0.01;
+  }
+
+  // ========================================
+  // Public API
+  // ========================================
+
+  /**
+   * Start speaking animation
+   * Called by ConciergeController when TTS starts
+   */
+  public startSpeaking(audioElement?: HTMLAudioElement) {
+    this.isSpeaking = true;
+    this.container.classList.add('speaking');
+
+    // Connect to audio element for frequency analysis
+    if (audioElement && !this.audioAnalyser) {
+      try {
+        this.audioContext = new AudioContext();
+        const source = this.audioContext.createMediaElementSource(audioElement);
+        this.audioAnalyser = this.audioContext.createAnalyser();
+        this.audioAnalyser.fftSize = 256;
+        source.connect(this.audioAnalyser);
+        this.audioAnalyser.connect(this.audioContext.destination);
+      } catch (e) {
+        console.warn('[AvatarRenderer] Could not create audio analyser:', e);
+      }
+    }
+  }
+
+  /**
+   * Stop speaking animation
+   * Called by ConciergeController when TTS ends
+   */
+  public stopSpeaking() {
+    this.isSpeaking = false;
+    this.container.classList.remove('speaking');
+
+    // Reset lip sync params
+    this.lipSyncParams.jawOpen = 0;
+    this.lipSyncParams.lipSync = 0;
+
+    // Reset mesh transform
+    if (this.splatMesh) {
+      this.splatMesh.scale.setScalar(1.5);
+      this.splatMesh.rotation.set(0, 0, 0);
+    }
+  }
+
+  /**
+   * Update lip sync parameters directly
+   * For manual control from audio analysis
+   */
+  public updateLipSync(params: { jawOpen?: number; lipSync?: number; expression?: number }) {
+    if (params.jawOpen !== undefined) this.lipSyncParams.jawOpen = params.jawOpen;
+    if (params.lipSync !== undefined) this.lipSyncParams.lipSync = params.lipSync;
+    if (params.expression !== undefined) this.lipSyncParams.expression = params.expression;
+  }
+
+  /**
+   * Check if 3DGS is loaded
+   */
+  public get is3DGSLoaded(): boolean {
+    return this.isLoaded;
+  }
+
+  /**
+   * Cleanup resources
+   */
+  public dispose() {
+    cancelAnimationFrame(this.animationFrameId);
+
+    if (this.audioContext) {
+      this.audioContext.close();
+    }
+
+    if (this.splatMesh) {
+      this.scene.remove(this.splatMesh);
+      this.splatMesh.dispose?.();
+    }
+
+    this.renderer.dispose();
+    this.controls.dispose();
+  }
+}
+
+// Auto-initialize when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  const container = document.querySelector('.avatar-renderer') as HTMLElement;
+  if (container) {
+    const renderer = new AvatarRenderer(container);
+
+    // Expose to window for ConciergeController access
+    (window as any).avatarRenderer = renderer;
+  }
+});
+
+// Export for module usage
+export { AvatarRenderer };
+</script>
