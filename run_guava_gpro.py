@@ -17,6 +17,8 @@ image = (
         # Additional for CUDA builds
         "build-essential", "ninja-build"
     )
+    # Fix pip environment (cuda image has minimal setup, unlike debian_slim)
+    .run_commands("pip install --upgrade pip setuptools wheel")
     # modal_final_clean.py pattern: simple pip_install
     .pip_install(
         "torch", "torchvision", "torchaudio",
