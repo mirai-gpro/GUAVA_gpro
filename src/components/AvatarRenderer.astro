@@ -1,6 +1,6 @@
 ---
 // AvatarRenderer.astro - 3DGS Avatar with SMPLX Lip Sync
-// Modified to use gsplat.js instead of Spark for localhost testing
+// Modified to use Three.js PLY Loader instead of Spark for localhost testing
 export interface Props {
   plyPath?: string;
   quality?: 'low' | 'medium' | 'high';
@@ -155,7 +155,7 @@ class AvatarRenderer {
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
   private controls: OrbitControls;
-  private splatMesh: THREE.Points | null = null; // Three.js Points for PLY
+  private splatMesh: THREE.Points | null = null;
   private isLoaded: boolean = false;
   private isSpeaking: boolean = false;
   private animationFrameId: number = 0;
@@ -164,9 +164,9 @@ class AvatarRenderer {
 
   // SMPLX parameters for lip sync
   private lipSyncParams = {
-    jawOpen: 0,      // 0-1: mouth openness
-    lipSync: 0,      // 0-1: lip movement intensity
-    expression: 0.5  // 0-1: expression blend
+    jawOpen: 0,
+    lipSync: 0,
+    expression: 0.5
   };
 
   constructor(container: HTMLElement) {
@@ -188,24 +188,20 @@ class AvatarRenderer {
   }
 
   private init() {
-    // Renderer setup
     const rect = this.container.getBoundingClientRect();
     this.renderer.setSize(rect.width, rect.height);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x000000, 0);
 
-    // Camera
     this.camera.position.set(0, 0, 2);
     this.camera.aspect = rect.width / rect.height;
     this.camera.updateProjectionMatrix();
 
-    // Controls
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
     this.controls.enableZoom = false;
     this.controls.enablePan = false;
 
-    // Lighting
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
     this.scene.add(ambientLight);
 
@@ -213,37 +209,26 @@ class AvatarRenderer {
     directionalLight.position.set(1, 1, 1);
     this.scene.add(directionalLight);
 
-    // Show loading status
     this.updateStatus('loading', '3DGS Loading...');
-
-    // Try to load 3DGS
     this.loadGaussianAvatar();
-
-    // Start render loop
     this.animate();
 
-    // Handle resize
     window.addEventListener('resize', () => this.handleResize());
   }
 
   private async loadGaussianAvatar() {
+    console.log('[DEBUG] loadGaussianAvatar called - using Three.js PLY Loader');
     const plyPath = this.container.dataset.plyPath || '/assets/avatar/GS_canonical_10k.ply';
 
     try {
-      // ★ gsplat.js版の実装 - Three.jsベースの簡易実装
-      // gsplat.jsの代わりに、Three.jsで簡易的な3DGS表示を実装
-      
-      // PLYファイルをロード
       const response = await fetch(plyPath);
       const arrayBuffer = await response.arrayBuffer();
       
-      // PLYローダーをThree.jsで使用
       const { PLYLoader } = await import('three/examples/jsm/loaders/PLYLoader.js');
       
       const loader = new PLYLoader();
       const geometry = loader.parse(arrayBuffer);
       
-      // ポイントクラウドマテリアル
       const material = new THREE.PointsMaterial({
         size: 0.01,
         vertexColors: true,
@@ -252,58 +237,42 @@ class AvatarRenderer {
         opacity: 0.9
       });
       
-      // メッシュを作成
       this.splatMesh = new THREE.Points(geometry, material);
-      
-      // Center and scale the avatar
       this.splatMesh.position.set(0, -0.3, 0);
       this.splatMesh.scale.setScalar(1.5);
       
       this.scene.add(this.splatMesh);
 
-      // Hide fallback, show 3DGS
       this.fallback.classList.add('hidden');
       this.isLoaded = true;
       this.updateStatus('loaded', '3DGS Ready');
 
-      // Hide status after 2 seconds
       setTimeout(() => {
         this.status.classList.remove('visible');
       }, 2000);
 
       console.log('[AvatarRenderer] 3DGS avatar loaded successfully with Three.js PLY loader');
 
-      // ★ Spark版（コメントアウト）
+      // ★ Spark版（コメントアウト - 本番環境用）
       /*
       const { SplatMesh } = await import('@sparkjsdev/spark');
-
       this.splatMesh = new SplatMesh();
       await this.splatMesh.load(plyPath);
-
-      // Center and scale the avatar
       this.splatMesh.position.set(0, -0.3, 0);
       this.splatMesh.scale.setScalar(1.5);
-
       this.scene.add(this.splatMesh);
-
-      // Hide fallback, show 3DGS
       this.fallback.classList.add('hidden');
       this.isLoaded = true;
       this.updateStatus('loaded', '3DGS Ready');
-
-      // Hide status after 2 seconds
       setTimeout(() => {
         this.status.classList.remove('visible');
       }, 2000);
-
       console.log('[AvatarRenderer] 3DGS avatar loaded successfully');
       */
 
     } catch (error) {
       console.warn('[AvatarRenderer] Failed to load 3DGS, using fallback:', error);
       this.updateStatus('error', 'Using 2D Avatar');
-
-      // Keep fallback visible
       setTimeout(() => {
         this.status.classList.remove('visible');
       }, 3000);
@@ -327,51 +296,38 @@ class AvatarRenderer {
   private animate() {
     this.animationFrameId = requestAnimationFrame(() => this.animate());
 
-    // Update lip sync animation
     if (this.isSpeaking) {
       this.updateLipSyncAnimation();
     }
 
     this.controls.update();
-    
-    // Three.jsのレンダリング
     this.renderer.render(this.scene, this.camera);
   }
 
   private updateLipSyncAnimation() {
-    // gsplat.jsではまだリップシンク実装は難しいため、
-    // とりあえず簡易的なアニメーションのみ
     if (!this.isLoaded) return;
 
-    // Get audio frequency data if available
     if (this.audioAnalyser) {
       const dataArray = new Uint8Array(this.audioAnalyser.frequencyBinCount);
       this.audioAnalyser.getByteFrequencyData(dataArray);
 
-      // Low frequency = mouth movement
       const lowFreqAvg = dataArray.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
       this.lipSyncParams.jawOpen = Math.min(lowFreqAvg / 180, 1);
 
-      // Mid frequency = lip detail
       const midFreqAvg = dataArray.slice(10, 30).reduce((a, b) => a + b, 0) / 20;
       this.lipSyncParams.lipSync = Math.min(midFreqAvg / 200, 1);
     } else {
-      // Fallback: sine wave animation
       const time = performance.now() / 1000;
       this.lipSyncParams.jawOpen = Math.abs(Math.sin(time * 8)) * 0.6;
       this.lipSyncParams.lipSync = Math.abs(Math.sin(time * 12)) * 0.4;
     }
 
-    // Apply deformation to Gaussian positions
-    // Three.jsのPointsでも同様の変形を適用
     this.applyLipSyncDeformation();
   }
 
   private applyLipSyncDeformation() {
     if (!this.splatMesh) return;
 
-    // Three.js Points版の変形処理
-    // Simplified deformation: scale Y based on jaw openness
     const baseScale = 1.5;
     const jawScale = 1 + this.lipSyncParams.jawOpen * 0.02;
 
@@ -381,46 +337,15 @@ class AvatarRenderer {
       baseScale
     );
 
-    // Subtle head movement for more natural appearance
     const time = performance.now() / 1000;
     this.splatMesh.rotation.y = Math.sin(time * 0.5) * 0.02;
     this.splatMesh.rotation.x = Math.sin(time * 0.3) * 0.01;
+  }
 
-    // ★ Spark版の変形処理（コメントアウト）
-    /*
-    if (!this.splatMesh) return;
-
-    // Simplified deformation: scale Y based on jaw openness
-    // Full implementation would transform individual Gaussian positions
-    // using SMPLX blend shapes and LBS weights
-    const baseScale = 1.5;
-    const jawScale = 1 + this.lipSyncParams.jawOpen * 0.02;
-
-    this.splatMesh.scale.set(
-      baseScale,
-      baseScale * jawScale,
-      baseScale
-    );
-
-    // Subtle head movement for more natural appearance
-    const time = performance.now() / 1000;
-    this.splatMesh.rotation.y = Math.sin(time * 0.5) * 0.02;
-    this.splatMesh.rotation.x = Math.sin(time * 0.3) * 0.01;
-    */
-
-  // ========================================
-  // Public API
-  // ========================================
-
-  /**
-   * Start speaking animation
-   * Called by ConciergeController when TTS starts
-   */
   public startSpeaking(audioElement?: HTMLAudioElement) {
     this.isSpeaking = true;
     this.container.classList.add('speaking');
 
-    // Connect to audio element for frequency analysis
     if (audioElement && !this.audioAnalyser) {
       try {
         this.audioContext = new AudioContext();
@@ -435,45 +360,29 @@ class AvatarRenderer {
     }
   }
 
-  /**
-   * Stop speaking animation
-   * Called by ConciergeController when TTS ends
-   */
   public stopSpeaking() {
     this.isSpeaking = false;
     this.container.classList.remove('speaking');
 
-    // Reset lip sync params
     this.lipSyncParams.jawOpen = 0;
     this.lipSyncParams.lipSync = 0;
 
-    // Reset transforms
     if (this.splatMesh) {
       this.splatMesh.scale.setScalar(1.5);
       this.splatMesh.rotation.set(0, 0, 0);
     }
   }
 
-  /**
-   * Update lip sync parameters directly
-   * For manual control from audio analysis
-   */
   public updateLipSync(params: { jawOpen?: number; lipSync?: number; expression?: number }) {
     if (params.jawOpen !== undefined) this.lipSyncParams.jawOpen = params.jawOpen;
     if (params.lipSync !== undefined) this.lipSyncParams.lipSync = params.lipSync;
     if (params.expression !== undefined) this.lipSyncParams.expression = params.expression;
   }
 
-  /**
-   * Check if 3DGS is loaded
-   */
   public get is3DGSLoaded(): boolean {
     return this.isLoaded;
   }
 
-  /**
-   * Cleanup resources
-   */
   public dispose() {
     cancelAnimationFrame(this.animationFrameId);
 
@@ -484,33 +393,24 @@ class AvatarRenderer {
     if (this.splatMesh) {
       this.scene.remove(this.splatMesh);
       if (this.splatMesh.geometry) this.splatMesh.geometry.dispose();
-      if (this.splatMesh.material) this.splatMesh.material.dispose();
+      if (this.splatMesh.material) {
+        const material = this.splatMesh.material as THREE.Material;
+        material.dispose();
+      }
     }
-
-    // ★ Spark版（コメントアウト）
-    /*
-    if (this.splatMesh) {
-      this.scene.remove(this.splatMesh);
-      this.splatMesh.dispose?.();
-    }
-    */
 
     this.renderer.dispose();
     this.controls.dispose();
   }
 }
 
-// Auto-initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
   const container = document.querySelector('.avatar-renderer') as HTMLElement;
   if (container) {
     const renderer = new AvatarRenderer(container);
-
-    // Expose to window for ConciergeController access
     (window as any).avatarRenderer = renderer;
   }
 });
 
-// Export for module usage
 export { AvatarRenderer };
 </script>
