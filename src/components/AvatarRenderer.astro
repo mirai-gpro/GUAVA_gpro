@@ -230,14 +230,23 @@ class AvatarRenderer {
 
     try {
       // ★ gsplat.js版の実装
-      const { Viewer } = await import('gsplat');
+      // gsplat.jsはESMとして直接importする
+      const GSPLAT = await import('https://cdn.jsdelivr.net/npm/gsplat@latest/dist/gsplat.module.js');
 
-      this.viewer = new Viewer({
+      this.viewer = new GSPLAT.Viewer({
         canvas: this.canvas,
-        scene: plyPath,
         cameraUp: [0, 1, 0],
-        initialCameraPosition: [0, 0, 2],
       });
+
+      // PLYファイルをロード
+      await this.viewer.addScene(plyPath, {
+        format: 'ply',
+        position: [0, -0.3, 0],
+        scale: [1.5, 1.5, 1.5],
+      });
+
+      // カメラ位置を設定
+      this.viewer.camera.position.set(0, 0, 2);
 
       // gsplat.jsは自動的にレンダリングを開始するため、
       // Three.jsのレンダリングループは不要になる可能性がある
