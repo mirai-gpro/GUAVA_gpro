@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>グルメサポート AIコンシェルジュ - プロトタイプ</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: white;
+        }
+        #container {
+            width: 100%;
+            height: 70vh;
+            position: relative;
+        }
+        #canvas {
+            width: 100%;
+            height: 100%;
+        }
+        #controls {
+            padding: 20px;
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+        }
+        .control-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 14px;
+            opacity: 0.8;
+        }
+        input[type="range"] {
+            width: 100%;
+            height: 8px;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.2);
+            outline: none;
+        }
+        .value-display {
+            text-align: right;
+            font-size: 12px;
+            opacity: 0.6;
+        }
+        #status {
+            padding: 10px 20px;
+            background: rgba(0,200,100,0.2);
+            font-size: 12px;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            background: #e94560;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        .btn:hover {
+            background: #ff6b6b;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="controls">
+        <h3 style="margin-bottom: 15px;">SMPLX表情パラメータ (リップシンク)</h3>
+
+        <div class="control-group">
+            <label>口の開き (jaw_pose)</label>
+            <input type="range" id="jaw" min="0" max="100" value="0">
+            <div class="value-display" id="jaw-value">0</div>
+        </div>
+
+        <div class="control-group">
+            <label>表情 (expression)</label>
+            <input type="range" id="expression" min="0" max="100" value="50">
+            <div class="value-display" id="expression-value">50</div>
+        </div>
+
+        <div class="control-group">
+            <label>頭の傾き (global_orient)</label>
+            <input type="range" id="head" min="-30" max="30" value="0">
+            <div class="value-display" id="head-value">0°</div>
+        </div>
+
+        <div style="margin-top: 20px;">
+            <button class="btn" id="loadAvatar">アバター読み込み</button>
+            <button class="btn" id="testLipSync">リップシンクテスト</button>
+        </div>
+    </div>
+
+    <div id="status">
+        ステータス: 初期化中...
+    </div>
+
+    <!-- Three.js + Spark (CDN) -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/",
+            "@sparkjsdev/spark": "https://cdn.jsdelivr.net/npm/@sparkjsdev/spark/dist/spark.module.js"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // ============================================
+        // SMPLX変形ロジック (行列演算のみ - NN不要)
+        // ============================================
+        class SMPLXDeformer {
+            constructor(bindingData) {
+                // Modalからエクスポートしたバインディングデータ
+                this.lbsWeights = bindingData.lbs_weights;  // Linear Blend Skinning weights
+                this.vTemplate = bindingData.v_template;     // 頂点テンプレート
+                this.faces = bindingData.faces;              // 面インデックス
+                this.jointRegressor = bindingData.J_regressor; // ジョイント回帰行列
+            }
+
+            // SMPLXポーズパラメータからGaussian位置を計算
+            deform(poseParams) {
+                const { jaw_pose, expression, global_orient } = poseParams;
+
+                // 1. ポーズパラメータ → 回転行列
+                const rotationMatrices = this.computeRotationMatrices(poseParams);
+
+                // 2. Linear Blend Skinning で頂点変形
+                const deformedVertices = this.applyLBS(rotationMatrices);
+
+                // 3. 表情ブレンドシェイプ適用
+                const finalVertices = this.applyExpressionBlendshapes(
+                    deformedVertices,
+                    expression
+                );
+
+                return finalVertices;
+            }
+
+            computeRotationMatrices(params) {
+                // Rodrigues formula: 軸角度 → 回転行列
+                // jaw_pose, global_orient は3次元ベクトル（軸角度表現）
+                const rodrigues = (axisAngle) => {
+                    const theta = Math.sqrt(
+                        axisAngle[0]**2 + axisAngle[1]**2 + axisAngle[2]**2
+                    );
+                    if (theta < 1e-8) return new THREE.Matrix3().identity();
+
+                    const k = axisAngle.map(v => v / theta);
+                    const K = new THREE.Matrix3().set(
+                        0, -k[2], k[1],
+                        k[2], 0, -k[0],
+                        -k[1], k[0], 0
+                    );
+
+                    const c = Math.cos(theta);
+                    const s = Math.sin(theta);
+
+                    // R = I + sin(θ)K + (1-cos(θ))K²
+                    const I = new THREE.Matrix3().identity();
+                    const K2 = K.clone().multiply(K);
+
+                    return I.multiplyScalar(c)
+                        .add(K.multiplyScalar(s))
+                        .add(K2.multiplyScalar(1 - c));
+                };
+
+                return {
+                    jaw: rodrigues(params.jaw_pose || [0, 0, 0]),
+                    global: rodrigues(params.global_orient || [0, 0, 0])
+                };
+            }
+
+            applyLBS(rotationMatrices) {
+                // 簡略化: 実際はすべてのジョイントに対してLBSを適用
+                // ここでは顎と頭部のみをデモ
+                return this.vTemplate; // プレースホルダー
+            }
+
+            applyExpressionBlendshapes(vertices, expressionWeights) {
+                // 表情ブレンドシェイプの適用
+                // SMPLX は10次元の表情パラメータを持つ
+                return vertices; // プレースホルダー
+            }
+        }
+
+        // ============================================
+        // メインアプリケーション
+        // ============================================
+        class GourmetConcierge {
+            constructor() {
+                this.scene = new THREE.Scene();
+                this.camera = new THREE.PerspectiveCamera(
+                    45, window.innerWidth / (window.innerHeight * 0.7), 0.1, 100
+                );
+                this.renderer = new THREE.WebGLRenderer({
+                    canvas: document.getElementById('canvas'),
+                    antialias: true,
+                    alpha: true
+                });
+
+                this.init();
+            }
+
+            init() {
+                // レンダラー設定
+                this.renderer.setSize(window.innerWidth, window.innerHeight * 0.7);
+                this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+                // カメラ
+                this.camera.position.set(0, 0, 3);
+
+                // コントロール
+                this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+                this.controls.enableDamping = true;
+
+                // ライト
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+                this.scene.add(ambientLight);
+
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+                directionalLight.position.set(1, 1, 1);
+                this.scene.add(directionalLight);
+
+                // プレースホルダー球体（Gaussian読み込み前）
+                const geometry = new THREE.SphereGeometry(0.5, 32, 32);
+                const material = new THREE.MeshStandardMaterial({
+                    color: 0xe94560,
+                    wireframe: true
+                });
+                this.placeholder = new THREE.Mesh(geometry, material);
+                this.scene.add(this.placeholder);
+
+                // ステータス更新
+                this.updateStatus('Three.js初期化完了 - Sparkレンダラー待機中');
+
+                // アニメーションループ
+                this.animate();
+
+                // イベントリスナー
+                this.setupEventListeners();
+            }
+
+            setupEventListeners() {
+                // スライダー
+                ['jaw', 'expression', 'head'].forEach(id => {
+                    const slider = document.getElementById(id);
+                    const valueDisplay = document.getElementById(`${id}-value`);
+
+                    slider.addEventListener('input', (e) => {
+                        const value = e.target.value;
+                        valueDisplay.textContent = id === 'head' ? `${value}°` : value;
+                        this.updatePose(id, parseFloat(value));
+                    });
+                });
+
+                // ボタン
+                document.getElementById('loadAvatar').addEventListener('click', () => {
+                    this.loadGaussianAvatar();
+                });
+
+                document.getElementById('testLipSync').addEventListener('click', () => {
+                    this.testLipSyncAnimation();
+                });
+
+                // リサイズ
+                window.addEventListener('resize', () => {
+                    this.camera.aspect = window.innerWidth / (window.innerHeight * 0.7);
+                    this.camera.updateProjectionMatrix();
+                    this.renderer.setSize(window.innerWidth, window.innerHeight * 0.7);
+                });
+            }
+
+            updatePose(param, value) {
+                // デモ: プレースホルダーを変形
+                if (this.placeholder) {
+                    if (param === 'jaw') {
+                        this.placeholder.scale.y = 1 + value / 200;
+                    } else if (param === 'head') {
+                        this.placeholder.rotation.z = value * Math.PI / 180;
+                    }
+                }
+            }
+
+            async loadGaussianAvatar() {
+                this.updateStatus('Gaussianアバターを読み込み中...');
+
+                try {
+                    // Spark動的インポート
+                    const { SplatMesh } = await import('@sparkjsdev/spark');
+
+                    // PLYファイルパス (ローカルサーバーから)
+                    const plyPath = './assets/GS_canonical_10k.ply';
+
+                    // SplatMeshを作成
+                    const splatMesh = new SplatMesh();
+                    await splatMesh.load(plyPath);
+
+                    // プレースホルダーを削除してSplatMeshを追加
+                    this.scene.remove(this.placeholder);
+                    this.scene.add(splatMesh);
+                    this.splatMesh = splatMesh;
+
+                    this.updateStatus('Gaussianアバター読み込み完了 (10,000 Gaussians)');
+                } catch (error) {
+                    console.error('Failed to load avatar:', error);
+                    this.updateStatus(`エラー: ${error.message}`);
+                }
+            }
+
+            testLipSyncAnimation() {
+                this.updateStatus('リップシンクテスト実行中...');
+
+                // 簡単な口パクアニメーション
+                const jawSlider = document.getElementById('jaw');
+                let time = 0;
+
+                const animate = () => {
+                    time += 0.1;
+                    const value = Math.abs(Math.sin(time * 3)) * 80;
+                    jawSlider.value = value;
+                    document.getElementById('jaw-value').textContent = Math.round(value);
+                    this.updatePose('jaw', value);
+
+                    if (time < 5) {
+                        requestAnimationFrame(animate);
+                    } else {
+                        this.updateStatus('リップシンクテスト完了');
+                    }
+                };
+
+                animate();
+            }
+
+            updateStatus(message) {
+                document.getElementById('status').textContent = `ステータス: ${message}`;
+            }
+
+            animate() {
+                requestAnimationFrame(() => this.animate());
+                this.controls.update();
+                this.renderer.render(this.scene, this.camera);
+            }
+        }
+
+        // アプリケーション起動
+        const app = new GourmetConcierge();
+    </script>
+</body>
+</html>
