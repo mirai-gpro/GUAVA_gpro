@@ -1,24 +1,26 @@
 ---
-// AvatarRenderer.astro - 3DGS Avatar with SMPLX Lip Sync
-// Modified to use Three.js PLY Loader instead of Spark for localhost testing
+// AvatarRenderer.astro - 3DGS Avatar with GaussianSplats3D + VRM Lip Sync
+// Based on gaussian-vrm architecture (GaussianSplats3D + three-vrm)
 export interface Props {
   plyPath?: string;
+  gvrmPath?: string;  // Future: GVRM format support
   quality?: 'low' | 'medium' | 'high';
 }
 
 const {
-  plyPath = '/assets/avatar/GS_canonical_10k.ply',
+  plyPath = '/assets/avatar/GS_canonical.ply',
+  gvrmPath = '',
   quality = 'medium'
 } = Astro.props;
 
 const qualitySettings = {
-  low: { gaussians: 5000, size: '340KB' },
-  medium: { gaussians: 10000, size: '680KB' },
-  high: { gaussians: 50000, size: '3.4MB' }
+  low: { gaussians: 5000, splatScale: 0.8 },
+  medium: { gaussians: 10000, splatScale: 1.0 },
+  high: { gaussians: 50000, splatScale: 1.2 }
 };
 ---
 
-<div class="avatar-renderer" data-ply-path={plyPath} data-quality={quality}>
+<div class="avatar-renderer" data-ply-path={plyPath} data-gvrm-path={gvrmPath} data-quality={quality}>
   <canvas id="avatarCanvas"></canvas>
   <div class="avatar-fallback" id="avatarFallback">
     <img src="/images/avatar-anime.png" alt="AI Avatar" class="fallback-img" />
@@ -135,16 +137,17 @@ const qualitySettings = {
 <script>
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
 
 /**
- * AvatarRenderer - 3DGS Avatar with SMPLX-based Lip Sync
+ * AvatarRenderer - 3DGS Avatar with GaussianSplats3D + VRM-style Lip Sync
  *
- * Architecture:
- * - Three.js PLY Loader for Gaussian Splatting visualization (temporary for localhost testing)
- * - SMPLX deformation via matrix operations (no NN at runtime)
- * - Audio frequency analysis for lip sync
- * 
- * NOTE: This uses Three.js Points as a fallback. Will use Spark in production.
+ * Architecture (based on gaussian-vrm):
+ * - GaussianSplats3D: High-quality 3DGS rendering from PLY files
+ * - VRM Blendshapes: a, i, u, e, o for lip sync (準備中)
+ * - Audio frequency analysis for real-time lip sync
+ *
+ * Future: Full GVRM format support with skinned mesh binding
  */
 class AvatarRenderer {
   private container: HTMLElement;
@@ -155,18 +158,27 @@ class AvatarRenderer {
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
   private controls: OrbitControls;
-  private splatMesh: THREE.Points | null = null;
+  private viewer: any = null;  // GaussianSplats3D viewer
+  private splatScene: any = null;
   private isLoaded: boolean = false;
   private isSpeaking: boolean = false;
   private animationFrameId: number = 0;
   private audioAnalyser: AnalyserNode | null = null;
   private audioContext: AudioContext | null = null;
 
-  // SMPLX parameters for lip sync
+  // VRM-style blendshape weights for lip sync
+  // Viseme mapping: a, i, u, e, o (Japanese vowels)
+  private visemeWeights = {
+    a: 0, i: 0, u: 0, e: 0, o: 0,
+    jawOpen: 0,
+    blink: 0
+  };
+
+  // Lip sync parameters derived from audio
   private lipSyncParams = {
     jawOpen: 0,
     lipSync: 0,
-    expression: 0.5
+    currentViseme: 'neutral' as 'a' | 'i' | 'u' | 'e' | 'o' | 'neutral'
   };
 
   constructor(container: HTMLElement) {
@@ -193,85 +205,110 @@ class AvatarRenderer {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x000000, 0);
 
-    this.camera.position.set(0, 0, 2);
+    this.camera.position.set(0, 0, 2.5);
     this.camera.aspect = rect.width / rect.height;
     this.camera.updateProjectionMatrix();
 
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
-    this.controls.enableZoom = false;
+    this.controls.enableZoom = true;
     this.controls.enablePan = false;
+    this.controls.minDistance = 1;
+    this.controls.maxDistance = 5;
 
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    // Lighting for 3DGS
+    const ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
     this.scene.add(ambientLight);
-
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    directionalLight.position.set(1, 1, 1);
-    this.scene.add(directionalLight);
 
     this.updateStatus('loading', '3DGS Loading...');
     this.loadGaussianAvatar();
-    this.animate();
 
     window.addEventListener('resize', () => this.handleResize());
   }
 
   private async loadGaussianAvatar() {
-    console.log('[DEBUG] loadGaussianAvatar called - using Three.js PLY Loader');
-    const plyPath = this.container.dataset.plyPath || '/assets/avatar/GS_canonical_10k.ply';
+    const plyPath = this.container.dataset.plyPath || '/assets/avatar/GS_canonical.ply';
+    const gvrmPath = this.container.dataset.gvrmPath;
 
+    console.log('[AvatarRenderer] Loading 3DGS avatar:', { plyPath, gvrmPath });
+
+    try {
+      // GaussianSplats3D DropInViewer for Three.js integration
+      this.viewer = new GaussianSplats3D.DropInViewer({
+        gpuAcceleratedSort: true,
+        sharedMemoryForWorkers: false,
+        dynamicScene: true,
+        sceneRevealMode: GaussianSplats3D.SceneRevealMode.Instant,
+        splatRenderMode: GaussianSplats3D.SplatRenderMode.ThreeD
+      });
+
+      // Add viewer to Three.js scene
+      this.scene.add(this.viewer);
+
+      // Load the PLY splat scene
+      await this.viewer.addSplatScene(plyPath, {
+        splatAlphaRemovalThreshold: 5,
+        position: [0, -0.3, 0],
+        rotation: [0, 0, 0, 1],
+        scale: [1.5, 1.5, 1.5]
+      });
+
+      this.splatScene = this.viewer.getSplatScene(0);
+
+      this.fallback.classList.add('hidden');
+      this.isLoaded = true;
+      this.updateStatus('loaded', '3DGS Ready');
+
+      // Start animation loop
+      this.animate();
+
+      setTimeout(() => {
+        this.status.classList.remove('visible');
+      }, 2000);
+
+      console.log('[AvatarRenderer] 3DGS avatar loaded successfully with GaussianSplats3D');
+
+    } catch (error) {
+      console.warn('[AvatarRenderer] GaussianSplats3D failed, trying PLY fallback:', error);
+      await this.loadPLYFallback(plyPath);
+    }
+  }
+
+  // Fallback to Three.js Points if GaussianSplats3D fails
+  private async loadPLYFallback(plyPath: string) {
     try {
       const response = await fetch(plyPath);
       const arrayBuffer = await response.arrayBuffer();
-      
+
       const { PLYLoader } = await import('three/examples/jsm/loaders/PLYLoader.js');
-      
       const loader = new PLYLoader();
       const geometry = loader.parse(arrayBuffer);
-      
+
       const material = new THREE.PointsMaterial({
-        size: 0.01,
+        size: 0.008,
         vertexColors: true,
         sizeAttenuation: true,
         transparent: true,
-        opacity: 0.9
+        opacity: 0.95
       });
-      
-      this.splatMesh = new THREE.Points(geometry, material);
-      this.splatMesh.position.set(0, -0.3, 0);
-      this.splatMesh.scale.setScalar(1.5);
-      
-      this.scene.add(this.splatMesh);
+
+      const points = new THREE.Points(geometry, material);
+      points.position.set(0, -0.3, 0);
+      points.scale.setScalar(1.5);
+      this.scene.add(points);
 
       this.fallback.classList.add('hidden');
       this.isLoaded = true;
-      this.updateStatus('loaded', '3DGS Ready');
+      this.updateStatus('loaded', '3DGS Ready (Fallback)');
+      this.animate();
 
       setTimeout(() => {
         this.status.classList.remove('visible');
       }, 2000);
 
-      console.log('[AvatarRenderer] 3DGS avatar loaded successfully with Three.js PLY loader');
-
-      // ★ Spark版（コメントアウト - 本番環境用）
-      /*
-      const { SplatMesh } = await import('@sparkjsdev/spark');
-      this.splatMesh = new SplatMesh();
-      await this.splatMesh.load(plyPath);
-      this.splatMesh.position.set(0, -0.3, 0);
-      this.splatMesh.scale.setScalar(1.5);
-      this.scene.add(this.splatMesh);
-      this.fallback.classList.add('hidden');
-      this.isLoaded = true;
-      this.updateStatus('loaded', '3DGS Ready');
-      setTimeout(() => {
-        this.status.classList.remove('visible');
-      }, 2000);
-      console.log('[AvatarRenderer] 3DGS avatar loaded successfully');
-      */
-
-    } catch (error) {
-      console.warn('[AvatarRenderer] Failed to load 3DGS, using fallback:', error);
+      console.log('[AvatarRenderer] PLY fallback loaded');
+    } catch (e) {
+      console.error('[AvatarRenderer] All loading methods failed:', e);
       this.updateStatus('error', 'Using 2D Avatar');
       setTimeout(() => {
         this.status.classList.remove('visible');
@@ -297,59 +334,114 @@ class AvatarRenderer {
     this.animationFrameId = requestAnimationFrame(() => this.animate());
 
     if (this.isSpeaking) {
-      this.updateLipSyncAnimation();
+      this.updateLipSyncFromAudio();
+      this.applyVisemeAnimation();
+    }
+
+    // Update GaussianSplats3D viewer
+    if (this.viewer) {
+      this.viewer.update();
     }
 
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   }
 
-  private updateLipSyncAnimation() {
-    if (!this.isLoaded) return;
-
-    let hasAudio = false;
-
-    if (this.audioAnalyser) {
-      const dataArray = new Uint8Array(this.audioAnalyser.frequencyBinCount);
-      this.audioAnalyser.getByteFrequencyData(dataArray);
-
-      const lowFreqAvg = dataArray.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
-      const midFreqAvg = dataArray.slice(10, 30).reduce((a, b) => a + b, 0) / 20;
-
-      // 音声が検出された場合
-      if (lowFreqAvg > 5 || midFreqAvg > 5) {
-        this.lipSyncParams.jawOpen = Math.min(lowFreqAvg / 180, 1);
-        this.lipSyncParams.lipSync = Math.min(midFreqAvg / 200, 1);
-        hasAudio = true;
-        console.log('[LipSync] Audio detected:', { lowFreqAvg, midFreqAvg, jawOpen: this.lipSyncParams.jawOpen });
-      }
-    }
-    
-    // 音声が検出されない場合はサイン波アニメーション
-    if (!hasAudio) {
+  // Audio analysis for lip sync - maps frequencies to visemes
+  private updateLipSyncFromAudio() {
+    if (!this.audioAnalyser) {
+      // No audio - use sine wave animation
       const time = performance.now() / 1000;
-      this.lipSyncParams.jawOpen = Math.abs(Math.sin(time * 8)) * 0.6;
-      this.lipSyncParams.lipSync = Math.abs(Math.sin(time * 12)) * 0.4;
+      this.lipSyncParams.jawOpen = Math.abs(Math.sin(time * 6)) * 0.5;
+      this.lipSyncParams.currentViseme = this.getVisemeFromTime(time);
+      return;
     }
 
-    this.applyLipSyncDeformation();
+    const dataArray = new Uint8Array(this.audioAnalyser.frequencyBinCount);
+    this.audioAnalyser.getByteFrequencyData(dataArray);
+
+    // Frequency bands for viseme detection
+    const lowFreq = dataArray.slice(0, 8).reduce((a, b) => a + b, 0) / 8;    // 0-300Hz
+    const midLowFreq = dataArray.slice(8, 16).reduce((a, b) => a + b, 0) / 8; // 300-600Hz
+    const midFreq = dataArray.slice(16, 32).reduce((a, b) => a + b, 0) / 16;  // 600-1200Hz
+    const highFreq = dataArray.slice(32, 64).reduce((a, b) => a + b, 0) / 32; // 1200-2400Hz
+
+    // Jaw opening from overall volume
+    const volume = (lowFreq + midLowFreq + midFreq) / 3;
+    this.lipSyncParams.jawOpen = Math.min(volume / 150, 1);
+
+    // Viseme detection based on frequency characteristics
+    // a: low frequency dominant (open mouth)
+    // i: high frequency dominant (wide mouth)
+    // u: mid-low frequency (rounded lips)
+    // e: mid frequency (slightly open)
+    // o: low-mid frequency (rounded)
+
+    if (volume < 10) {
+      this.lipSyncParams.currentViseme = 'neutral';
+    } else if (lowFreq > midFreq && lowFreq > highFreq) {
+      this.lipSyncParams.currentViseme = lowFreq > midLowFreq ? 'a' : 'o';
+    } else if (highFreq > midFreq) {
+      this.lipSyncParams.currentViseme = 'i';
+    } else if (midLowFreq > midFreq) {
+      this.lipSyncParams.currentViseme = 'u';
+    } else {
+      this.lipSyncParams.currentViseme = 'e';
+    }
+
+    // Update viseme weights with smoothing
+    const targetWeights = { a: 0, i: 0, u: 0, e: 0, o: 0 };
+    if (this.lipSyncParams.currentViseme !== 'neutral') {
+      targetWeights[this.lipSyncParams.currentViseme] = this.lipSyncParams.jawOpen;
+    }
+
+    // Smooth interpolation
+    const smoothing = 0.3;
+    for (const v of ['a', 'i', 'u', 'e', 'o'] as const) {
+      this.visemeWeights[v] += (targetWeights[v] - this.visemeWeights[v]) * smoothing;
+    }
+    this.visemeWeights.jawOpen = this.lipSyncParams.jawOpen;
   }
 
-  private applyLipSyncDeformation() {
-    if (!this.splatMesh) return;
+  // Cycle through visemes when no audio
+  private getVisemeFromTime(time: number): 'a' | 'i' | 'u' | 'e' | 'o' | 'neutral' {
+    const visemes: ('a' | 'i' | 'u' | 'e' | 'o')[] = ['a', 'i', 'u', 'e', 'o'];
+    const index = Math.floor((time * 3) % visemes.length);
+    return visemes[index];
+  }
 
-    const baseScale = 1.5;
-    const jawScale = 1 + this.lipSyncParams.jawOpen * 0.15; // 0.02から0.15に増やして動きを目立たせる
+  // Apply viseme animation to the 3DGS model
+  // Note: Full blendshape support requires GVRM format
+  // Current: Transform-based approximation
+  private applyVisemeAnimation() {
+    if (!this.viewer || !this.splatScene) return;
 
-    this.splatMesh.scale.set(
-      baseScale,
-      baseScale * jawScale,
-      baseScale
-    );
-
+    const jaw = this.visemeWeights.jawOpen;
     const time = performance.now() / 1000;
-    this.splatMesh.rotation.y = Math.sin(time * 0.5) * 0.05; // 0.02から0.05に増やして動きを目立たせる
-    this.splatMesh.rotation.x = Math.sin(time * 0.3) * 0.03; // 0.01から0.03に増やして動きを目立たせる
+
+    // Transform-based lip sync animation
+    // Y-scale for jaw opening, subtle rotation for expression
+    const scaleY = 1.5 * (1 + jaw * 0.08);
+    const rotY = Math.sin(time * 0.4) * 0.03;
+    const rotX = Math.sin(time * 0.25) * 0.02;
+
+    // Apply transform to the splat scene
+    // GaussianSplats3D uses position/rotation/scale arrays
+    try {
+      // Access the splat mesh transform
+      if (this.viewer.children && this.viewer.children.length > 0) {
+        const splatMesh = this.viewer.children[0];
+        if (splatMesh) {
+          splatMesh.scale.set(1.5, scaleY, 1.5);
+          splatMesh.rotation.y = rotY;
+          splatMesh.rotation.x = rotX;
+        }
+      }
+    } catch (e) {
+      // Fallback: transform the viewer itself
+      this.viewer.scale.set(1, 1 + jaw * 0.05, 1);
+      this.viewer.rotation.y = rotY;
+    }
   }
 
   public startSpeaking(audioElement?: HTMLAudioElement) {
@@ -365,7 +457,7 @@ class AvatarRenderer {
         this.audioAnalyser.fftSize = 256;
         source.connect(this.audioAnalyser);
         this.audioAnalyser.connect(this.audioContext.destination);
-        console.log('[AvatarRenderer] Audio analyser connected');
+        console.log('[AvatarRenderer] Audio analyser connected for lip sync');
       } catch (e) {
         console.warn('[AvatarRenderer] Could not create audio analyser:', e);
       }
@@ -377,23 +469,43 @@ class AvatarRenderer {
     this.isSpeaking = false;
     this.container.classList.remove('speaking');
 
-    this.lipSyncParams.jawOpen = 0;
-    this.lipSyncParams.lipSync = 0;
+    // Reset viseme weights
+    this.visemeWeights = { a: 0, i: 0, u: 0, e: 0, o: 0, jawOpen: 0, blink: 0 };
+    this.lipSyncParams = { jawOpen: 0, lipSync: 0, currentViseme: 'neutral' };
 
-    if (this.splatMesh) {
-      this.splatMesh.scale.setScalar(1.5);
-      this.splatMesh.rotation.set(0, 0, 0);
+    // Reset transform
+    if (this.viewer) {
+      this.viewer.scale.set(1, 1, 1);
+      this.viewer.rotation.set(0, 0, 0);
     }
   }
 
-  public updateLipSync(params: { jawOpen?: number; lipSync?: number; expression?: number }) {
-    if (params.jawOpen !== undefined) this.lipSyncParams.jawOpen = params.jawOpen;
-    if (params.lipSync !== undefined) this.lipSyncParams.lipSync = params.lipSync;
-    if (params.expression !== undefined) this.lipSyncParams.expression = params.expression;
+  // Manual viseme control (for external lip sync systems)
+  public setViseme(viseme: 'a' | 'i' | 'u' | 'e' | 'o' | 'neutral', weight: number = 1) {
+    // Reset all
+    this.visemeWeights.a = 0;
+    this.visemeWeights.i = 0;
+    this.visemeWeights.u = 0;
+    this.visemeWeights.e = 0;
+    this.visemeWeights.o = 0;
+
+    if (viseme !== 'neutral') {
+      this.visemeWeights[viseme] = weight;
+      this.visemeWeights.jawOpen = weight * 0.5;
+    }
+  }
+
+  public updateLipSync(params: { jawOpen?: number; viseme?: 'a' | 'i' | 'u' | 'e' | 'o' | 'neutral' }) {
+    if (params.jawOpen !== undefined) this.visemeWeights.jawOpen = params.jawOpen;
+    if (params.viseme) this.setViseme(params.viseme, params.jawOpen || 0.5);
   }
 
   public get is3DGSLoaded(): boolean {
     return this.isLoaded;
+  }
+
+  public get currentViseme(): string {
+    return this.lipSyncParams.currentViseme;
   }
 
   public dispose() {
@@ -403,13 +515,9 @@ class AvatarRenderer {
       this.audioContext.close();
     }
 
-    if (this.splatMesh) {
-      this.scene.remove(this.splatMesh);
-      if (this.splatMesh.geometry) this.splatMesh.geometry.dispose();
-      if (this.splatMesh.material) {
-        const material = this.splatMesh.material as THREE.Material;
-        material.dispose();
-      }
+    if (this.viewer) {
+      this.viewer.dispose();
+      this.scene.remove(this.viewer);
     }
 
     this.renderer.dispose();
@@ -417,11 +525,13 @@ class AvatarRenderer {
   }
 }
 
+// Initialize on DOM ready
 document.addEventListener('DOMContentLoaded', () => {
   const container = document.querySelector('.avatar-renderer') as HTMLElement;
   if (container) {
     const renderer = new AvatarRenderer(container);
     (window as any).avatarRenderer = renderer;
+    console.log('[AvatarRenderer] Initialized and exposed as window.avatarRenderer');
   }
 });
 
