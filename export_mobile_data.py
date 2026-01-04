@@ -144,6 +144,46 @@ def export_mobile_data():
             np.savez_compressed(gs_export_path, **gaussian_data)
             print(f"Saved Gaussian data to {gs_export_path}")
 
+    # Export SMPLX animation data (required for WebGL LBS)
+    try:
+        animation_data = {
+            'shapedirs': infer_model.smplx.shapedirs.cpu().numpy() if hasattr(infer_model.smplx, 'shapedirs') else None,
+            'posedirs': infer_model.smplx.posedirs.cpu().numpy() if hasattr(infer_model.smplx, 'posedirs') else None,
+            'J_regressor': infer_model.smplx.J_regressor.cpu().numpy() if hasattr(infer_model.smplx, 'J_regressor') else None,
+            'parents': infer_model.smplx.parents.cpu().numpy() if hasattr(infer_model.smplx, 'parents') else None,
+        }
+
+        # Try to get expression blendshapes from FLAME
+        if hasattr(infer_model, 'ehm') and hasattr(infer_model.ehm, 'flame'):
+            flame = infer_model.ehm.flame
+            if hasattr(flame, 'shapedirs'):
+                animation_data['flame_shapedirs'] = flame.shapedirs.cpu().numpy()
+            if hasattr(flame, 'expr_dirs'):
+                animation_data['expression_dirs'] = flame.expr_dirs.cpu().numpy()
+
+        anim_export_path = "/root/GUAVA/outputs/mobile_export/animation_data.npz"
+        np.savez_compressed(anim_export_path, **{k: v for k, v in animation_data.items() if v is not None})
+        print(f"Saved animation data to {anim_export_path}")
+    except Exception as e:
+        print(f"Warning: Could not export animation data: {e}")
+
+    # Export Gaussian binding data (critical for proper animation!)
+    try:
+        # We need to run inference to get binding data
+        # For now, export the UV map binding info from the model
+        binding_data = {
+            'uvmap_f_idx': infer_model.smplx.uvmap_f_idx.cpu().numpy() if hasattr(infer_model.smplx, 'uvmap_f_idx') else None,
+            'uvmap_f_bary': infer_model.smplx.uvmap_f_bary.cpu().numpy() if hasattr(infer_model.smplx, 'uvmap_f_bary') else None,
+            'uvmap_mask': infer_model.smplx.uvmap_mask.cpu().numpy() if hasattr(infer_model.smplx, 'uvmap_mask') else None,
+            'n_smplx_vertices': infer_model.smplx.v_template.shape[0],
+        }
+
+        binding_export_path = "/root/GUAVA/outputs/mobile_export/binding_data.npz"
+        np.savez_compressed(binding_export_path, **{k: v for k, v in binding_data.items() if v is not None})
+        print(f"Saved binding data to {binding_export_path}")
+    except Exception as e:
+        print(f"Warning: Could not export binding data: {e}")
+
     # Export summary
     export_info = {
         'n_gaussians': n_gaussians,
@@ -152,6 +192,8 @@ def export_mobile_data():
         'files': [
             'smplx_data.npz',
             'gaussians.npz',
+            'animation_data.npz',
+            'binding_data.npz',
         ]
     }
 
