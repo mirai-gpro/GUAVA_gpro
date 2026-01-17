@@ -63,6 +63,80 @@ image = (
 app = modal.App("guava-ply-generator-cloud")
 
 
+def save_web_compatible_ply(ubody_gaussians, output_dir):
+    """
+    gvrm.ts/ply.ts互換のPLYファイルを保存
+
+    フォーマット (全てfloat32):
+    - x, y, z (位置)
+    - nx, ny, nz (法線)
+    - f_dc_0, f_dc_1, f_dc_2 (SH形式の色)
+    - scale_0, scale_1, scale_2 (スケール)
+    """
+    import numpy as np
+    import struct
+
+    # Canonical Gaussiansを取得
+    if not ubody_gaussians._canoical:
+        ubody_gaussians.get_canoical_gaussians()
+
+    # データ抽出
+    import torch
+    xyz = torch.cat([ubody_gaussians._smplx_xyz, ubody_gaussians._uv_xyz_cano], dim=1)[0].detach().cpu().numpy()
+
+    # 法線（ゼロで初期化）
+    normals = np.zeros_like(xyz)
+
+    # 色（SH形式に変換）
+    colors_smplx = ubody_gaussians._smplx_features_color[0, :, :3].detach().cpu().numpy()
+    colors_uv = ubody_gaussians._uv_features_color[0, :, :3].detach().cpu().numpy()
+    colors = np.concatenate([colors_smplx, colors_uv], axis=0)
+    # RGB to SH変換
+    f_dc = colors / 0.28209479177387814
+
+    # スケール
+    scale_smplx = torch.log(ubody_gaussians._smplx_scaling[0]).detach().cpu().numpy()
+    scale_uv = torch.log(ubody_gaussians._uv_scaling_cano[0]).detach().cpu().numpy()
+    scales = np.concatenate([scale_smplx, scale_uv], axis=0)
+
+    num_vertices = xyz.shape[0]
+
+    # PLYヘッダー作成
+    header = f"""ply
+format binary_little_endian 1.0
+element vertex {num_vertices}
+property float x
+property float y
+property float z
+property float nx
+property float ny
+property float nz
+property float f_dc_0
+property float f_dc_1
+property float f_dc_2
+property float scale_0
+property float scale_1
+property float scale_2
+end_header
+"""
+
+    # バイナリデータ作成
+    output_path = os.path.join(output_dir, 'avatar_web.ply')
+    with open(output_path, 'wb') as f:
+        f.write(header.encode('ascii'))
+        for i in range(num_vertices):
+            # 位置
+            f.write(struct.pack('<fff', xyz[i, 0], xyz[i, 1], xyz[i, 2]))
+            # 法線
+            f.write(struct.pack('<fff', normals[i, 0], normals[i, 1], normals[i, 2]))
+            # 色(SH)
+            f.write(struct.pack('<fff', f_dc[i, 0], f_dc[i, 1], f_dc[i, 2]))
+            # スケール
+            f.write(struct.pack('<fff', scales[i, 0], scales[i, 1], scales[i, 2]))
+
+    print(f"    Web PLY saved: {output_path} ({num_vertices} vertices)")
+
+
 @app.function(
     gpu="L4",
     image=image,
@@ -77,7 +151,8 @@ def generate_ply(
     output_name: str = "guava_avatar",
     save_split: bool = True,
     save_point_cloud: bool = True,
-    save_gaussian: bool = True
+    save_gaussian: bool = True,
+    save_web: bool = True
 ):
     """
     論文準拠のPLYファイルを生成
@@ -87,6 +162,7 @@ def generate_ply(
         save_split: SMPLX/UV別々に保存するか
         save_point_cloud: Open3D形式の点群PLYを保存するか
         save_gaussian: 3DGS形式のPLYを保存するか
+        save_web: gvrm.ts/ply.ts互換のWeb用PLYを保存するか
     """
     import json
     import glob
@@ -118,22 +194,45 @@ def generate_ply(
         return None
 
     # --- データパス探索 ---
+    # optim_tracking_ehm.pkl が存在するディレクトリを探す
     search_path = "/root/EHM_results/processed_data"
     data_path = None
 
+    def find_tracking_data(base_path, max_depth=3):
+        """optim_tracking_ehm.pkl を含むディレクトリを再帰的に探す"""
+        if max_depth <= 0:
+            return None
+        tracking_file = os.path.join(base_path, 'optim_tracking_ehm.pkl')
+        if os.path.exists(tracking_file):
+            return base_path
+        if os.path.isdir(base_path):
+            for item in os.listdir(base_path):
+                item_path = os.path.join(base_path, item)
+                if os.path.isdir(item_path):
+                    result = find_tracking_data(item_path, max_depth - 1)
+                    if result:
+                        return result
+        return None
+
     if os.path.exists(search_path):
-        subdirs = [d for d in os.listdir(search_path) if os.path.isdir(os.path.join(search_path, d))]
-        if subdirs:
-            # driving/driving のような構造を処理
-            first_dir = os.path.join(search_path, subdirs[0])
-            inner_dirs = [d for d in os.listdir(first_dir) if os.path.isdir(os.path.join(first_dir, d))]
-            if inner_dirs:
-                data_path = os.path.join(first_dir, inner_dirs[0])
-            else:
-                data_path = first_dir
+        data_path = find_tracking_data(search_path)
+        if data_path:
             print(f"自動検出されたデータパス: {data_path}")
+            # 確認: 必要なファイルの存在チェック
+            tracking_file = os.path.join(data_path, 'optim_tracking_ehm.pkl')
+            print(f"トラッキングファイル存在: {os.path.exists(tracking_file)}")
         else:
-            print(f"[ERROR] トラッキングデータが見つかりません: {search_path}")
+            print(f"[ERROR] optim_tracking_ehm.pkl が見つかりません")
+            print(f"検索パス: {search_path}")
+            # デバッグ: ディレクトリ構造を表示
+            for root, dirs, files in os.walk(search_path):
+                level = root.replace(search_path, '').count(os.sep)
+                if level < 3:
+                    indent = ' ' * 2 * level
+                    print(f"{indent}{os.path.basename(root)}/")
+                    subindent = ' ' * 2 * (level + 1)
+                    for file in files[:5]:
+                        print(f"{subindent}{file}")
             return None
     else:
         print(f"[ERROR] EHM結果ディレクトリが見つかりません: {search_path}")
@@ -144,6 +243,7 @@ def generate_ply(
     print(f"分割保存: {save_split}")
     print(f"点群PLY: {save_point_cloud}")
     print(f"Gaussian PLY: {save_gaussian}")
+    print(f"Web PLY (gvrm.ts互換): {save_web}")
     print("=" * 50)
 
     # --- モデル設定 ---
@@ -179,8 +279,12 @@ def generate_ply(
     print(f"モデル読み込み完了: {base_model}")
 
     # --- データセット設定 ---
-    # ConfigDictは通常のdictを返すため、直接設定可能
+    # ConfigDictは_dot_config(OmegaConf)も持っているため、両方更新が必要
     meta_cfg['DATASET']['data_path'] = data_path
+    # _dot_configも更新（TrackedDataはドット記法でアクセスするため）
+    OmegaConf.set_readonly(meta_cfg._dot_config, False)
+    meta_cfg._dot_config.DATASET.data_path = data_path
+    OmegaConf.set_readonly(meta_cfg._dot_config, True)
 
     test_dataset = TrackedData_infer(cfg=meta_cfg, split='test', device=device, test_full=True)
     print(f"データセット読み込み完了: {len(test_dataset)} サンプル")
@@ -236,6 +340,11 @@ def generate_ply(
                 if save_split:
                     ply_files.extend(['GS_canonical_smplx.ply', 'GS_canonical_uv.ply'])
 
+            if save_web:
+                print("  Web PLY (gvrm.ts/ply.ts互換)を保存中...")
+                save_web_compatible_ply(ubody_gaussians, video_output_dir)
+                ply_files.append('avatar_web.ply')
+
             # 統計情報
             num_template = vertex_gs_dict['positions'].shape[1]
             num_uv = up_point_gs_dict['opacities'].shape[1]
@@ -265,7 +374,8 @@ def generate_ply(
         'settings': {
             'save_split': save_split,
             'save_point_cloud': save_point_cloud,
-            'save_gaussian': save_gaussian
+            'save_gaussian': save_gaussian,
+            'save_web': save_web
         },
         'videos': results
     }
@@ -291,7 +401,8 @@ def generate_ply(
 def main(
     output_name: str = "guava_avatar",
     split: bool = True,
-    gaussian_only: bool = False
+    gaussian_only: bool = False,
+    web_only: bool = False
 ):
     """
     PLY生成のエントリーポイント
@@ -300,14 +411,16 @@ def main(
         modal run generate_ply_cloud.py
         modal run generate_ply_cloud.py --output-name my_avatar
         modal run generate_ply_cloud.py --gaussian-only
+        modal run generate_ply_cloud.py --web-only
     """
     print("=== GUAVA PLY Generator (Cloud Assets版) ===")
 
     result = generate_ply.remote(
         output_name=output_name,
         save_split=split,
-        save_point_cloud=not gaussian_only,
-        save_gaussian=True
+        save_point_cloud=not gaussian_only and not web_only,
+        save_gaussian=not web_only,
+        save_web=True
     )
 
     if result:
