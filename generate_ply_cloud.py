@@ -202,8 +202,12 @@ def generate_ply(
     print(f"モデル読み込み完了: {base_model}")
 
     # --- データセット設定 ---
-    # ConfigDictは通常のdictを返すため、直接設定可能
+    # ConfigDictは_dot_config(OmegaConf)も持っているため、両方更新が必要
     meta_cfg['DATASET']['data_path'] = data_path
+    # _dot_configも更新（TrackedDataはドット記法でアクセスするため）
+    OmegaConf.set_readonly(meta_cfg._dot_config, False)
+    meta_cfg._dot_config.DATASET.data_path = data_path
+    OmegaConf.set_readonly(meta_cfg._dot_config, True)
 
     test_dataset = TrackedData_infer(cfg=meta_cfg, split='test', device=device, test_full=True)
     print(f"データセット読み込み完了: {len(test_dataset)} サンプル")
