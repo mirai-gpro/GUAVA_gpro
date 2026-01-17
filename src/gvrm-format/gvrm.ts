@@ -293,16 +293,23 @@ export class GVRM {
 
     // ========== Step 6: Create Gaussian Splatting Viewer ==========
     console.log('[GVRM] Step 6: Creating Gaussian Splatting Viewer...');
-    
-    this.gsViewer = new GSViewer(
-      this.plyData.vertices,
-      this.plyData.vertices.length / 3,
-      this.templateGaussians.latents,
-      this.templateGaussians.opacities,
-      this.templateGaussians.scales,
-      this.templateGaussians.rotations
-    );
-    
+
+    const vertexCount = this.plyData.vertices.length / 3;
+
+    // GSViewerが期待するGaussianDataオブジェクトを構築
+    const gaussianData = {
+      positions: this.plyData.vertices,
+      latents: this.templateGaussians.latents,
+      opacity: this.templateGaussians.opacities,
+      scale: this.templateGaussians.scales,
+      rotation: this.templateGaussians.rotations,
+      boneIndices: new Float32Array(vertexCount * 4),  // ダミー（スキニングなし）
+      boneWeights: new Float32Array(vertexCount * 4),  // ダミー（スキニングなし）
+      vertexCount: vertexCount
+    };
+
+    this.gsViewer = new GSViewer(gaussianData);
+
     console.log('[GVRM] ✅ GSViewer created');
 
     // ========== Step 7: Generate Coarse Feature Map ==========
