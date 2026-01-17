@@ -131,6 +131,99 @@ def add_faces_to_ply(source_ply_path, output_ply_path, faces):
     return output_ply_path
 
 
+def save_web_compatible_ply(ubody_gaussians, output_dir, faces=None):
+    """
+    gvrm.ts/ply.ts互換のPLYファイルを保存
+
+    フォーマット (全てfloat32):
+    - x, y, z (位置)
+    - nx, ny, nz (法線)
+    - f_dc_0, f_dc_1, f_dc_2 (SH形式の色)
+    - scale_0, scale_1, scale_2 (スケール)
+
+    オプションで三角形データも追加
+    """
+    import numpy as np
+    import struct
+    import os
+    import torch
+
+    # Canonical Gaussiansを取得
+    if not ubody_gaussians._canoical:
+        ubody_gaussians.get_canoical_gaussians()
+
+    # データ取得 (save_gaussian_plyと同じ方法)
+    xyz = torch.cat([ubody_gaussians._smplx_xyz, ubody_gaussians._uv_xyz_cano], dim=1)[0].detach().cpu().numpy()
+
+    # 色データ (RGB to SH)
+    colors = torch.cat([ubody_gaussians._smplx_features_color[0, :, :3],
+                        ubody_gaussians._uv_features_color[0, :, :3]], dim=0)
+    f_dc = (colors / 0.28209479177387814).detach().cpu().numpy()  # RGB to SH係数
+
+    # スケール (log変換)
+    scaling = torch.cat([torch.log(ubody_gaussians._smplx_scaling),
+                         torch.log(ubody_gaussians._uv_scaling_cano)], dim=1)[0].detach().cpu().numpy()
+
+    num_points = xyz.shape[0]
+
+    # 法線（ゼロで初期化）
+    normals = np.zeros((num_points, 3), dtype=np.float32)
+
+    # PLYヘッダー作成
+    output_path = os.path.join(output_dir, 'avatar_web.ply')
+
+    header = "ply\n"
+    header += "format binary_little_endian 1.0\n"
+    header += f"element vertex {num_points}\n"
+    header += "property float x\n"
+    header += "property float y\n"
+    header += "property float z\n"
+    header += "property float nx\n"
+    header += "property float ny\n"
+    header += "property float nz\n"
+    header += "property float f_dc_0\n"
+    header += "property float f_dc_1\n"
+    header += "property float f_dc_2\n"
+    header += "property float scale_0\n"
+    header += "property float scale_1\n"
+    header += "property float scale_2\n"
+
+    # 三角形データがあれば追加
+    if faces is not None:
+        num_faces = faces.shape[0]
+        header += f"element face {num_faces}\n"
+        header += "property list uchar uint vertex_indices\n"
+
+    header += "end_header\n"
+
+    # バイナリデータ作成
+    with open(output_path, 'wb') as f:
+        f.write(header.encode('ascii'))
+
+        # 頂点データ書き込み
+        for i in range(num_points):
+            # x, y, z
+            f.write(struct.pack('<fff', xyz[i, 0], xyz[i, 1], xyz[i, 2]))
+            # nx, ny, nz
+            f.write(struct.pack('<fff', normals[i, 0], normals[i, 1], normals[i, 2]))
+            # f_dc_0, f_dc_1, f_dc_2
+            f.write(struct.pack('<fff', f_dc[i, 0], f_dc[i, 1], f_dc[i, 2]))
+            # scale_0, scale_1, scale_2
+            f.write(struct.pack('<fff', scaling[i, 0], scaling[i, 1], scaling[i, 2]))
+
+        # 三角形データ書き込み
+        if faces is not None:
+            for i in range(num_faces):
+                f.write(struct.pack('<B', 3))
+                f.write(struct.pack('<III',
+                    int(faces[i, 0]),
+                    int(faces[i, 1]),
+                    int(faces[i, 2])
+                ))
+
+    return output_path, num_points
+
+
 def verify_ply_format(ply_path):
     """PLYファイルの形式を検証"""
     import struct
@@ -255,17 +348,19 @@ def generate_ply(
     save_split: bool = False,
     save_point_cloud: bool = False,
     save_gaussian: bool = True,
+    save_web: bool = True,
     verify_format: bool = True,
     extract_samples: bool = True
 ):
     """
     論文準拠の完全なPLYファイルを生成（三角形データ付き）
-    
+
     Args:
         output_name: 出力ディレクトリ名
         save_split: SMPLX/UV別々に保存するか
         save_point_cloud: Open3D形式の点群PLYを保存するか
         save_gaussian: 3DGS形式のPLYを保存するか（論文準拠）
+        save_web: gvrm.ts/ply.ts互換のPLYを保存するか
         verify_format: PLYファイル形式を検証するか
         extract_samples: サンプルデータを抽出するか
     """
@@ -464,6 +559,31 @@ def generate_ply(
                     import traceback
                     traceback.print_exc()
 
+            # gvrm.ts/ply.ts互換のWeb PLYを生成
+            if save_web:
+                print("  💾 Web PLY (gvrm.ts互換)を保存中...")
+                try:
+                    faces = ubody_gaussians.smplx.faces_tensor.cpu().numpy()
+                    web_ply_path, web_num_points = save_web_compatible_ply(
+                        ubody_gaussians, video_output_dir, faces=faces
+                    )
+                    ply_files.append('avatar_web.ply')
+                    print(f"    ✅ avatar_web.ply 保存完了 ({web_num_points:,} 頂点)")
+
+                    # Web PLYの検証
+                    if verify_format:
+                        print(f"\n  🔍 PLYファイル検証: avatar_web.ply")
+                        web_verification = verify_ply_format(web_ply_path)
+                        if "error" not in web_verification:
+                            print(f"    ✅ 頂点数: {web_verification['vertex_count']:,}")
+                            print(f"    ✅ 三角形数: {web_verification['face_count']:,}")
+                            print(f"    ✅ プロパティ数: {web_verification['property_count']} (期待: 12)")
+                            print(f"    📊 ファイルサイズ: {web_verification['file_size_mb']:.2f} MB")
+                except Exception as e:
+                    print(f"    ❌ Web PLY保存エラー: {e}")
+                    import traceback
+                    traceback.print_exc()
+
             # 統計情報
             num_template = vertex_gs_dict['positions'].shape[1]
             num_uv = up_point_gs_dict['opacities'].shape[1]
@@ -504,6 +624,7 @@ def generate_ply(
             'save_split': save_split,
             'save_point_cloud': save_point_cloud,
             'save_gaussian': save_gaussian,
+            'save_web': save_web,
             'verify_format': verify_format
         },
         'videos': results
@@ -546,28 +667,39 @@ def main(
     split: bool = False,
     point_cloud: bool = False,
     gaussian: bool = True,
+    web: bool = True,
+    web_only: bool = False,
     no_verify: bool = False,
     no_samples: bool = False
 ):
     """
     PLY生成のエントリーポイント
-    
+
     使用例:
         modal run generate_ply_cloud.py
         modal run generate_ply_cloud.py --output-name my_avatar
         modal run generate_ply_cloud.py --split
+        modal run generate_ply_cloud.py --web-only  # avatar_web.plyのみ生成
         modal run generate_ply_cloud.py --no-verify
     """
     print("=" * 70)
     print("🚀 GUAVA PLY Generator (三角形データ追加版)")
-    print("📖 公式PLY + EHMメッシュの三角形データ")
+    print("📖 公式PLY + EHMメッシュの三角形データ + gvrm.ts互換Web PLY")
     print("=" * 70)
+
+    # web_onlyの場合は他のPLYを無効化
+    if web_only:
+        gaussian = False
+        point_cloud = False
+        split = False
+        web = True
 
     result = generate_ply.remote(
         output_name=output_name,
         save_split=split,
         save_point_cloud=point_cloud,
         save_gaussian=gaussian,
+        save_web=web,
         verify_format=not no_verify,
         extract_samples=not no_samples
     )
