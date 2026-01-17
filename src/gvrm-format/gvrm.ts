@@ -353,16 +353,15 @@ export class GVRM {
 
     // ========== Step 8.5: Initialize InverseTextureMapper ==========
     console.log('[GVRM] Step 8.5: Initializing InverseTextureMapper...');
-    
+
     this.inverseMapper = new InverseTextureMapper();
-    await this.inverseMapper.initialize(
-      uvMapping,
-      sourceCameraConfig.position,
-      sourceCameraConfig.target,
-      518,
-      518
-    );
-    
+    this.inverseMapper.initialize(1024, {
+      position: sourceCameraConfig.position,
+      target: sourceCameraConfig.target,
+      fov: sourceCameraConfig.fov,
+      viewport: { width: 518, height: 518 }
+    });
+
     console.log('[GVRM] ✅ InverseTextureMapper initialized');
 
     // ========== Step 9: Inverse Texture Mapping ==========
@@ -474,32 +473,33 @@ export class GVRM {
 
     // ========== Step 10: Generate UV Gaussians ==========
     console.log('[GVRM] Step 10: Generating UV Gaussians...');
-    
-    this.uvGaussians = await this.uvDecoder.decode(
+
+    this.uvGaussians = await this.uvDecoder.generate(
       uvFeatureMap,
-      uvMapping,
       uvResolution,
-      uvResolution
+      uvResolution,
+      uvMapping
     );
     
     console.log('[GVRM] ✅ UV Gaussians generated:', {
-      count: this.uvGaussians.positions.length / 3
+      count: this.uvGaussians.uvCount
     });
 
     // ========== Step 11: Create Ubody Gaussians (Template ⊕ UV) ==========
     console.log('[GVRM] Step 11: Creating Ubody Gaussians (Template ⊕ UV)...');
-    
+
     const templateCount = this.templateGaussians.positions.length / 3;
-    const uvCount = this.uvGaussians.positions.length / 3;
+    const uvCount = this.uvGaussians.uvCount;
     const totalCount = templateCount + uvCount;
-    
+
     // Concatenate all Gaussian properties
+    // Note: UV Gaussians use different property names
     const ubodyGaussians = {
-      positions: this.concatenateArrays(this.templateGaussians.positions, this.uvGaussians.positions),
-      opacities: this.concatenateArrays(this.templateGaussians.opacities, this.uvGaussians.opacities),
-      scales: this.concatenateArrays(this.templateGaussians.scales, this.uvGaussians.scales),
-      rotations: this.concatenateArrays(this.templateGaussians.rotations, this.uvGaussians.rotations),
-      latents: this.concatenateArrays(this.templateGaussians.latents, this.uvGaussians.latents)
+      positions: this.concatenateArrays(this.templateGaussians.positions, this.uvGaussians.localPositions),
+      opacities: this.concatenateArrays(this.templateGaussians.opacities, this.uvGaussians.opacity),
+      scales: this.concatenateArrays(this.templateGaussians.scales, this.uvGaussians.scale),
+      rotations: this.concatenateArrays(this.templateGaussians.rotations, this.uvGaussians.rotation),
+      latents: this.concatenateArrays(this.templateGaussians.latents, this.uvGaussians.latent32ch)
     };
     
     console.log('[GVRM] ✅ Ubody Gaussians created:', {
