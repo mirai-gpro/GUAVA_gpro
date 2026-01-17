@@ -139,7 +139,9 @@ def save_web_compatible_ply(ubody_gaussians, output_dir, faces=None):
     - x, y, z (位置)
     - nx, ny, nz (法線)
     - f_dc_0, f_dc_1, f_dc_2 (SH形式の色)
+    - opacity (不透明度)
     - scale_0, scale_1, scale_2 (スケール)
+    - rot_0, rot_1, rot_2, rot_3 (回転quaternion)
 
     オプションで三角形データも追加
     """
@@ -147,6 +149,10 @@ def save_web_compatible_ply(ubody_gaussians, output_dir, faces=None):
     import struct
     import os
     import torch
+
+    # inverse_sigmoid関数
+    def inverse_sigmoid(x):
+        return torch.log(x / (1 - x))
 
     # Canonical Gaussiansを取得
     if not ubody_gaussians._canoical:
@@ -160,9 +166,17 @@ def save_web_compatible_ply(ubody_gaussians, output_dir, faces=None):
                         ubody_gaussians._uv_features_color[0, :, :3]], dim=0)
     f_dc = (colors / 0.28209479177387814).detach().cpu().numpy()  # RGB to SH係数
 
+    # 不透明度 (inverse sigmoid変換)
+    opacity = torch.cat([inverse_sigmoid(ubody_gaussians._smplx_opacity),
+                         inverse_sigmoid(ubody_gaussians._uv_opacity_cano)], dim=1)[0].detach().cpu().numpy()
+
     # スケール (log変換)
     scaling = torch.cat([torch.log(ubody_gaussians._smplx_scaling),
                          torch.log(ubody_gaussians._uv_scaling_cano)], dim=1)[0].detach().cpu().numpy()
+
+    # 回転 (quaternion)
+    rotation = torch.cat([ubody_gaussians._smplx_rotation,
+                          ubody_gaussians._uv_rotation_cano], dim=1)[0].detach().cpu().numpy()
 
     num_points = xyz.shape[0]
 
@@ -184,9 +198,14 @@ def save_web_compatible_ply(ubody_gaussians, output_dir, faces=None):
     header += "property float f_dc_0\n"
     header += "property float f_dc_1\n"
     header += "property float f_dc_2\n"
+    header += "property float opacity\n"
     header += "property float scale_0\n"
     header += "property float scale_1\n"
     header += "property float scale_2\n"
+    header += "property float rot_0\n"
+    header += "property float rot_1\n"
+    header += "property float rot_2\n"
+    header += "property float rot_3\n"
 
     # 三角形データがあれば追加
     if faces is not None:
@@ -208,8 +227,12 @@ def save_web_compatible_ply(ubody_gaussians, output_dir, faces=None):
             f.write(struct.pack('<fff', normals[i, 0], normals[i, 1], normals[i, 2]))
             # f_dc_0, f_dc_1, f_dc_2
             f.write(struct.pack('<fff', f_dc[i, 0], f_dc[i, 1], f_dc[i, 2]))
+            # opacity
+            f.write(struct.pack('<f', opacity[i, 0]))
             # scale_0, scale_1, scale_2
             f.write(struct.pack('<fff', scaling[i, 0], scaling[i, 1], scaling[i, 2]))
+            # rot_0, rot_1, rot_2, rot_3
+            f.write(struct.pack('<ffff', rotation[i, 0], rotation[i, 1], rotation[i, 2], rotation[i, 3]))
 
         # 三角形データ書き込み
         if faces is not None:
@@ -577,7 +600,7 @@ def generate_ply(
                         if "error" not in web_verification:
                             print(f"    ✅ 頂点数: {web_verification['vertex_count']:,}")
                             print(f"    ✅ 三角形数: {web_verification['face_count']:,}")
-                            print(f"    ✅ プロパティ数: {web_verification['property_count']} (期待: 12)")
+                            print(f"    ✅ プロパティ数: {web_verification['property_count']} (期待: 17)")
                             print(f"    📊 ファイルサイズ: {web_verification['file_size_mb']:.2f} MB")
                 except Exception as e:
                     print(f"    ❌ Web PLY保存エラー: {e}")
