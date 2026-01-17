@@ -63,6 +63,80 @@ image = (
 app = modal.App("guava-ply-generator-cloud")
 
 
+def save_web_compatible_ply(ubody_gaussians, output_dir):
+    """
+    gvrm.ts/ply.ts互換のPLYファイルを保存
+
+    フォーマット (全てfloat32):
+    - x, y, z (位置)
+    - nx, ny, nz (法線)
+    - f_dc_0, f_dc_1, f_dc_2 (SH形式の色)
+    - scale_0, scale_1, scale_2 (スケール)
+    """
+    import numpy as np
+    import struct
+
+    # Canonical Gaussiansを取得
+    if not ubody_gaussians._canoical:
+        ubody_gaussians.get_canoical_gaussians()
+
+    # データ抽出
+    import torch
+    xyz = torch.cat([ubody_gaussians._smplx_xyz, ubody_gaussians._uv_xyz_cano], dim=1)[0].detach().cpu().numpy()
+
+    # 法線（ゼロで初期化）
+    normals = np.zeros_like(xyz)
+
+    # 色（SH形式に変換）
+    colors_smplx = ubody_gaussians._smplx_features_color[0, :, :3].detach().cpu().numpy()
+    colors_uv = ubody_gaussians._uv_features_color[0, :, :3].detach().cpu().numpy()
+    colors = np.concatenate([colors_smplx, colors_uv], axis=0)
+    # RGB to SH変換
+    f_dc = colors / 0.28209479177387814
+
+    # スケール
+    scale_smplx = torch.log(ubody_gaussians._smplx_scaling[0]).detach().cpu().numpy()
+    scale_uv = torch.log(ubody_gaussians._uv_scaling_cano[0]).detach().cpu().numpy()
+    scales = np.concatenate([scale_smplx, scale_uv], axis=0)
+
+    num_vertices = xyz.shape[0]
+
+    # PLYヘッダー作成
+    header = f"""ply
+format binary_little_endian 1.0
+element vertex {num_vertices}
+property float x
+property float y
+property float z
+property float nx
+property float ny
+property float nz
+property float f_dc_0
+property float f_dc_1
+property float f_dc_2
+property float scale_0
+property float scale_1
+property float scale_2
+end_header
+"""
+
+    # バイナリデータ作成
+    output_path = os.path.join(output_dir, 'avatar_web.ply')
+    with open(output_path, 'wb') as f:
+        f.write(header.encode('ascii'))
+        for i in range(num_vertices):
+            # 位置
+            f.write(struct.pack('<fff', xyz[i, 0], xyz[i, 1], xyz[i, 2]))
+            # 法線
+            f.write(struct.pack('<fff', normals[i, 0], normals[i, 1], normals[i, 2]))
+            # 色(SH)
+            f.write(struct.pack('<fff', f_dc[i, 0], f_dc[i, 1], f_dc[i, 2]))
+            # スケール
+            f.write(struct.pack('<fff', scales[i, 0], scales[i, 1], scales[i, 2]))
+
+    print(f"    Web PLY saved: {output_path} ({num_vertices} vertices)")
+
+
 @app.function(
     gpu="L4",
     image=image,
@@ -77,7 +151,8 @@ def generate_ply(
     output_name: str = "guava_avatar",
     save_split: bool = True,
     save_point_cloud: bool = True,
-    save_gaussian: bool = True
+    save_gaussian: bool = True,
+    save_web: bool = True
 ):
     """
     論文準拠のPLYファイルを生成
@@ -87,6 +162,7 @@ def generate_ply(
         save_split: SMPLX/UV別々に保存するか
         save_point_cloud: Open3D形式の点群PLYを保存するか
         save_gaussian: 3DGS形式のPLYを保存するか
+        save_web: gvrm.ts/ply.ts互換のWeb用PLYを保存するか
     """
     import json
     import glob
@@ -167,6 +243,7 @@ def generate_ply(
     print(f"分割保存: {save_split}")
     print(f"点群PLY: {save_point_cloud}")
     print(f"Gaussian PLY: {save_gaussian}")
+    print(f"Web PLY (gvrm.ts互換): {save_web}")
     print("=" * 50)
 
     # --- モデル設定 ---
@@ -263,6 +340,11 @@ def generate_ply(
                 if save_split:
                     ply_files.extend(['GS_canonical_smplx.ply', 'GS_canonical_uv.ply'])
 
+            if save_web:
+                print("  Web PLY (gvrm.ts/ply.ts互換)を保存中...")
+                save_web_compatible_ply(ubody_gaussians, video_output_dir)
+                ply_files.append('avatar_web.ply')
+
             # 統計情報
             num_template = vertex_gs_dict['positions'].shape[1]
             num_uv = up_point_gs_dict['opacities'].shape[1]
@@ -292,7 +374,8 @@ def generate_ply(
         'settings': {
             'save_split': save_split,
             'save_point_cloud': save_point_cloud,
-            'save_gaussian': save_gaussian
+            'save_gaussian': save_gaussian,
+            'save_web': save_web
         },
         'videos': results
     }
@@ -318,7 +401,8 @@ def generate_ply(
 def main(
     output_name: str = "guava_avatar",
     split: bool = True,
-    gaussian_only: bool = False
+    gaussian_only: bool = False,
+    web_only: bool = False
 ):
     """
     PLY生成のエントリーポイント
@@ -327,14 +411,16 @@ def main(
         modal run generate_ply_cloud.py
         modal run generate_ply_cloud.py --output-name my_avatar
         modal run generate_ply_cloud.py --gaussian-only
+        modal run generate_ply_cloud.py --web-only
     """
     print("=== GUAVA PLY Generator (Cloud Assets版) ===")
 
     result = generate_ply.remote(
         output_name=output_name,
         save_split=split,
-        save_point_cloud=not gaussian_only,
-        save_gaussian=True
+        save_point_cloud=not gaussian_only and not web_only,
+        save_gaussian=not web_only,
+        save_web=True
     )
 
     if result:
