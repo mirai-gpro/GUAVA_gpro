@@ -294,7 +294,7 @@ export class GVRM {
     // ========== Step 6: Create Gaussian Splatting Viewer ==========
     console.log('[GVRM] Step 6: Creating Gaussian Splatting Viewer...');
 
-    const vertexCount = this.plyData.vertices.length / 3;
+    const plyVertexCount = this.plyData.vertices.length / 3;
 
     // GSViewerが期待するGaussianDataオブジェクトを構築
     const gaussianData = {
@@ -303,9 +303,9 @@ export class GVRM {
       opacity: this.templateGaussians.opacities,
       scale: this.templateGaussians.scales,
       rotation: this.templateGaussians.rotations,
-      boneIndices: new Float32Array(vertexCount * 4),  // ダミー（スキニングなし）
-      boneWeights: new Float32Array(vertexCount * 4),  // ダミー（スキニングなし）
-      vertexCount: vertexCount
+      boneIndices: new Float32Array(plyVertexCount * 4),  // ダミー（スキニングなし）
+      boneWeights: new Float32Array(plyVertexCount * 4),  // ダミー（スキニングなし）
+      vertexCount: plyVertexCount
     };
 
     this.gsViewer = new GSViewer(gaussianData);
