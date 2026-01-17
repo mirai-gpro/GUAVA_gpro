@@ -353,16 +353,15 @@ export class GVRM {
 
     // ========== Step 8.5: Initialize InverseTextureMapper ==========
     console.log('[GVRM] Step 8.5: Initializing InverseTextureMapper...');
-    
+
     this.inverseMapper = new InverseTextureMapper();
-    await this.inverseMapper.initialize(
-      uvMapping,
-      sourceCameraConfig.position,
-      sourceCameraConfig.target,
-      518,
-      518
-    );
-    
+    this.inverseMapper.initialize(1024, {
+      position: sourceCameraConfig.position,
+      target: sourceCameraConfig.target,
+      fov: sourceCameraConfig.fov,
+      viewport: { width: 518, height: 518 }
+    });
+
     console.log('[GVRM] ✅ InverseTextureMapper initialized');
 
     // ========== Step 9: Inverse Texture Mapping ==========
