@@ -1,0 +1,35 @@
+diff --git a/src/gvrm-format/gvrm.ts b/src/gvrm-format/gvrm.ts
+index 1cc5148..f2b5e69 100644
+--- a/src/gvrm-format/gvrm.ts
++++ b/src/gvrm-format/gvrm.ts
+@@ -117,7 +117,7 @@ export class GVRM {
+     console.log('[GVRM] Loading assets...');
+ 
+     // ========== Step 0: Load PLY file ==========
+-    const plyUrl = '/assets/avatar_24p.ply';
++    const plyUrl = '/assets/avatar_web.ply';
+     this.plyData = await this.loadPLY(plyUrl);
+     console.log('[GVRM] PLY loaded:', this.plyData.vertices.length / 3, 'vertices');
+ 
+@@ -575,12 +575,15 @@ export class GVRM {
+       normals[i * 3] = dataView.getFloat32(offset, true); offset += 4;
+       normals[i * 3 + 1] = dataView.getFloat32(offset, true); offset += 4;
+       normals[i * 3 + 2] = dataView.getFloat32(offset, true); offset += 4;
+-      
+-      colors[i * 3] = dataView.getUint8(offset) / 255; offset += 1;
+-      colors[i * 3 + 1] = dataView.getUint8(offset) / 255; offset += 1;
+-      colors[i * 3 + 2] = dataView.getUint8(offset) / 255; offset += 1;
+-      
+-      // Skip remaining properties
++
++      // 色はfloat32形式 (SH係数: f_dc_0, f_dc_1, f_dc_2)
++      // SH係数からRGBに変換: RGB = SH * 0.28209479177387814
++      const SH_C0 = 0.28209479177387814;
++      colors[i * 3] = dataView.getFloat32(offset, true) * SH_C0; offset += 4;
++      colors[i * 3 + 1] = dataView.getFloat32(offset, true) * SH_C0; offset += 4;
++      colors[i * 3 + 2] = dataView.getFloat32(offset, true) * SH_C0; offset += 4;
++
++      // Skip remaining properties (scale_0, scale_1, scale_2)
+       for (let j = 9; j < vertexProperties.length; j++) {
+         offset += 4; // Assume float for simplicity
+       }
