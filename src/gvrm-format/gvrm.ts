@@ -320,11 +320,17 @@ export class GVRM {
     // ========== Step 8: GPU UV Rasterization ==========
     console.log('[GVRM] Step 8: GPU UV Rasterization...');
     console.log('[GVRM]   ⚡ Using WebGL GPU for real-time rasterization');
-    
+
+    // MeshDataオブジェクトを構築
+    const meshData = {
+      vertices: this.templateMesh.vertices,
+      triangles: this.templateMesh.triangles,
+      numVertices: this.templateMesh.vertices.length / 3,
+      numTriangles: this.templateMesh.triangles.length / 3
+    };
+
     const uvMapping = await this.webglRasterizer.rasterize(
-      this.templateMesh.vertices,
-      this.templateMesh.triangles,
-      1024,
+      meshData,
       1024
     );
     
