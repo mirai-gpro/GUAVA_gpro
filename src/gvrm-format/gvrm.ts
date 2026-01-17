@@ -482,23 +482,24 @@ export class GVRM {
     );
     
     console.log('[GVRM] ✅ UV Gaussians generated:', {
-      count: this.uvGaussians.positions.length / 3
+      count: this.uvGaussians.uvCount
     });
 
     // ========== Step 11: Create Ubody Gaussians (Template ⊕ UV) ==========
     console.log('[GVRM] Step 11: Creating Ubody Gaussians (Template ⊕ UV)...');
-    
+
     const templateCount = this.templateGaussians.positions.length / 3;
-    const uvCount = this.uvGaussians.positions.length / 3;
+    const uvCount = this.uvGaussians.uvCount;
     const totalCount = templateCount + uvCount;
-    
+
     // Concatenate all Gaussian properties
+    // Note: UV Gaussians use different property names
     const ubodyGaussians = {
-      positions: this.concatenateArrays(this.templateGaussians.positions, this.uvGaussians.positions),
-      opacities: this.concatenateArrays(this.templateGaussians.opacities, this.uvGaussians.opacities),
-      scales: this.concatenateArrays(this.templateGaussians.scales, this.uvGaussians.scales),
-      rotations: this.concatenateArrays(this.templateGaussians.rotations, this.uvGaussians.rotations),
-      latents: this.concatenateArrays(this.templateGaussians.latents, this.uvGaussians.latents)
+      positions: this.concatenateArrays(this.templateGaussians.positions, this.uvGaussians.localPositions),
+      opacities: this.concatenateArrays(this.templateGaussians.opacities, this.uvGaussians.opacity),
+      scales: this.concatenateArrays(this.templateGaussians.scales, this.uvGaussians.scale),
+      rotations: this.concatenateArrays(this.templateGaussians.rotations, this.uvGaussians.rotation),
+      latents: this.concatenateArrays(this.templateGaussians.latents, this.uvGaussians.latent32ch)
     };
     
     console.log('[GVRM] ✅ Ubody Gaussians created:', {
