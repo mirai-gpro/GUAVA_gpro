@@ -146,23 +146,28 @@ def save_web_compatible_ply(ubody_gaussians, output_dir, faces=None):
     import numpy as np
     import struct
     import os
+    import torch
 
     # Canonical Gaussiansを取得
     if not ubody_gaussians._canoical:
         ubody_gaussians.get_canoical_gaussians()
 
-    # データ取得
-    xyz = ubody_gaussians._xyz.detach().cpu().numpy()  # [N, 3]
-    features_dc = ubody_gaussians._features_dc.detach().cpu().numpy()  # [N, 1, 3]
-    scaling = ubody_gaussians._scaling.detach().cpu().numpy()  # [N, 3]
+    # データ取得 (save_gaussian_plyと同じ方法)
+    xyz = torch.cat([ubody_gaussians._smplx_xyz, ubody_gaussians._uv_xyz_cano], dim=1)[0].detach().cpu().numpy()
+
+    # 色データ (RGB to SH)
+    colors = torch.cat([ubody_gaussians._smplx_features_color[0, :, :3],
+                        ubody_gaussians._uv_features_color[0, :, :3]], dim=0)
+    f_dc = (colors / 0.28209479177387814).detach().cpu().numpy()  # RGB to SH係数
+
+    # スケール (log変換)
+    scaling = torch.cat([torch.log(ubody_gaussians._smplx_scaling),
+                         torch.log(ubody_gaussians._uv_scaling_cano)], dim=1)[0].detach().cpu().numpy()
 
     num_points = xyz.shape[0]
 
-    # 法線（ゼロで初期化 - 後でメッシュから計算可能）
+    # 法線（ゼロで初期化）
     normals = np.zeros((num_points, 3), dtype=np.float32)
-
-    # SH係数を取り出し
-    f_dc = features_dc[:, 0, :]  # [N, 3]
 
     # PLYヘッダー作成
     output_path = os.path.join(output_dir, 'avatar_web.ply')
