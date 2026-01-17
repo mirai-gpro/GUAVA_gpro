@@ -118,22 +118,45 @@ def generate_ply(
         return None
 
     # --- データパス探索 ---
+    # optim_tracking_ehm.pkl が存在するディレクトリを探す
     search_path = "/root/EHM_results/processed_data"
     data_path = None
 
+    def find_tracking_data(base_path, max_depth=3):
+        """optim_tracking_ehm.pkl を含むディレクトリを再帰的に探す"""
+        if max_depth <= 0:
+            return None
+        tracking_file = os.path.join(base_path, 'optim_tracking_ehm.pkl')
+        if os.path.exists(tracking_file):
+            return base_path
+        if os.path.isdir(base_path):
+            for item in os.listdir(base_path):
+                item_path = os.path.join(base_path, item)
+                if os.path.isdir(item_path):
+                    result = find_tracking_data(item_path, max_depth - 1)
+                    if result:
+                        return result
+        return None
+
     if os.path.exists(search_path):
-        subdirs = [d for d in os.listdir(search_path) if os.path.isdir(os.path.join(search_path, d))]
-        if subdirs:
-            # driving/driving のような構造を処理
-            first_dir = os.path.join(search_path, subdirs[0])
-            inner_dirs = [d for d in os.listdir(first_dir) if os.path.isdir(os.path.join(first_dir, d))]
-            if inner_dirs:
-                data_path = os.path.join(first_dir, inner_dirs[0])
-            else:
-                data_path = first_dir
+        data_path = find_tracking_data(search_path)
+        if data_path:
             print(f"自動検出されたデータパス: {data_path}")
+            # 確認: 必要なファイルの存在チェック
+            tracking_file = os.path.join(data_path, 'optim_tracking_ehm.pkl')
+            print(f"トラッキングファイル存在: {os.path.exists(tracking_file)}")
         else:
-            print(f"[ERROR] トラッキングデータが見つかりません: {search_path}")
+            print(f"[ERROR] optim_tracking_ehm.pkl が見つかりません")
+            print(f"検索パス: {search_path}")
+            # デバッグ: ディレクトリ構造を表示
+            for root, dirs, files in os.walk(search_path):
+                level = root.replace(search_path, '').count(os.sep)
+                if level < 3:
+                    indent = ' ' * 2 * level
+                    print(f"{indent}{os.path.basename(root)}/")
+                    subindent = ' ' * 2 * (level + 1)
+                    for file in files[:5]:
+                        print(f"{subindent}{file}")
             return None
     else:
         print(f"[ERROR] EHM結果ディレクトリが見つかりません: {search_path}")
