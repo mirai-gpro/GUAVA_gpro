@@ -473,12 +473,12 @@ export class GVRM {
 
     // ========== Step 10: Generate UV Gaussians ==========
     console.log('[GVRM] Step 10: Generating UV Gaussians...');
-    
-    this.uvGaussians = await this.uvDecoder.decode(
+
+    this.uvGaussians = await this.uvDecoder.generate(
       uvFeatureMap,
-      uvMapping,
       uvResolution,
-      uvResolution
+      uvResolution,
+      uvMapping
     );
     
     console.log('[GVRM] ✅ UV Gaussians generated:', {
