@@ -597,7 +597,11 @@ def main(
                 print(f"      - 頂点数: {v['vertex_count']:,}")
                 print(f"      - 三角形数: {v['face_count']:,}")
                 print(f"      - ファイルサイズ: {v['file_size_mb']:.2f} MB")
-        else:
-            print("\n" + "=" * 70)
-            print("❌ PLY生成に失敗しました")
-            print("=" * 70)
+
+        print("\n" + "=" * 70)
+        print("✅ PLY生成が完了しました")
+        print("=" * 70)
+    else:
+        print("\n" + "=" * 70)
+        print("❌ PLY生成に失敗しました")
+        print("=" * 70)
