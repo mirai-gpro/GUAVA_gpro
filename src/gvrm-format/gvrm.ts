@@ -16,6 +16,7 @@ interface PLYData {
   triangles: Uint32Array;
   normals?: Float32Array;
   colors?: Float32Array;
+  uvCoords?: Float32Array;  // UV coordinates per vertex [N * 2]
 }
 
 interface EHMMesh {
@@ -120,6 +121,11 @@ export class GVRM {
     const plyUrl = '/assets/avatar_web.ply';
     this.plyData = await this.loadPLY(plyUrl);
     console.log('[GVRM] PLY loaded:', this.plyData.vertices.length / 3, 'vertices');
+
+    // ========== Step 0.5: Load UV coordinates ==========
+    const uvCoordsUrl = '/assets/uv_coords.bin';
+    this.plyData.uvCoords = await this.loadUVCoords(uvCoordsUrl);
+    console.log('[GVRM] UV coords loaded:', this.plyData.uvCoords.length / 2, 'vertices');
 
     // ========== Step 1: Initialize modules ==========
     console.log('[GVRM] Step 1: Initializing modules...');
@@ -293,16 +299,23 @@ export class GVRM {
 
     // ========== Step 6: Create Gaussian Splatting Viewer ==========
     console.log('[GVRM] Step 6: Creating Gaussian Splatting Viewer...');
-    
-    this.gsViewer = new GSViewer(
-      this.plyData.vertices,
-      this.plyData.vertices.length / 3,
-      this.templateGaussians.latents,
-      this.templateGaussians.opacities,
-      this.templateGaussians.scales,
-      this.templateGaussians.rotations
-    );
-    
+
+    const plyVertexCount = this.plyData.vertices.length / 3;
+
+    // GSViewerが期待するGaussianDataオブジェクトを構築
+    const gaussianData = {
+      positions: this.plyData.vertices,
+      latents: this.templateGaussians.latents,
+      opacity: this.templateGaussians.opacities,
+      scale: this.templateGaussians.scales,
+      rotation: this.templateGaussians.rotations,
+      boneIndices: new Float32Array(plyVertexCount * 4),  // ダミー（スキニングなし）
+      boneWeights: new Float32Array(plyVertexCount * 4),  // ダミー（スキニングなし）
+      vertexCount: plyVertexCount
+    };
+
+    this.gsViewer = new GSViewer(gaussianData);
+
     console.log('[GVRM] ✅ GSViewer created');
 
     // ========== Step 7: Generate Coarse Feature Map ==========
@@ -313,11 +326,22 @@ export class GVRM {
     // ========== Step 8: GPU UV Rasterization ==========
     console.log('[GVRM] Step 8: GPU UV Rasterization...');
     console.log('[GVRM]   ⚡ Using WebGL GPU for real-time rasterization');
-    
+
+    // MeshDataオブジェクトを構築
+    if (!this.plyData.uvCoords) {
+      throw new Error('[GVRM] UV coordinates not loaded. Please ensure uv_coords.bin is available.');
+    }
+
+    const meshData = {
+      vertices: this.templateMesh.vertices,
+      triangles: this.templateMesh.triangles,
+      uvCoords: this.plyData.uvCoords,
+      numVertices: this.templateMesh.vertices.length / 3,
+      numTriangles: this.templateMesh.triangles.length / 3
+    };
+
     const uvMapping = await this.webglRasterizer.rasterize(
-      this.templateMesh.vertices,
-      this.templateMesh.triangles,
-      1024,
+      meshData,
       1024
     );
     
@@ -642,6 +666,40 @@ export class GVRM {
       normals,
       colors
     };
+  }
+
+  private async loadUVCoords(url: string): Promise<Float32Array> {
+    console.log('[GVRM] Loading UV coordinates from:', url);
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`[GVRM] Failed to load UV coords: ${response.status} ${response.statusText}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const uvCoords = new Float32Array(arrayBuffer);
+
+    // Validate UV range
+    let minU = Infinity, maxU = -Infinity;
+    let minV = Infinity, maxV = -Infinity;
+
+    const numVertices = uvCoords.length / 2;
+    for (let i = 0; i < numVertices; i++) {
+      const u = uvCoords[i * 2];
+      const v = uvCoords[i * 2 + 1];
+      if (u < minU) minU = u;
+      if (u > maxU) maxU = u;
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+
+    console.log('[GVRM] UV coords stats:', {
+      vertices: numVertices,
+      uRange: `[${minU.toFixed(4)}, ${maxU.toFixed(4)}]`,
+      vRange: `[${minV.toFixed(4)}, ${maxV.toFixed(4)}]`
+    });
+
+    return uvCoords;
   }
 
   private async loadSourceCameraConfig(): Promise<{

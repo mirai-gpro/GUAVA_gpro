@@ -31,6 +31,18 @@ interface PoseParams {
 }
 
 /**
+ * MeshData interface for WebGL UV Rasterizer
+ * Used by webgl-uv-rasterizer.ts
+ */
+export interface MeshData {
+  vertices: Float32Array;     // [N * 3] vertex positions (x, y, z)
+  triangles: Uint32Array;     // [M * 3] triangle indices
+  uvCoords: Float32Array;     // [N * 2] UV coordinates per vertex (u, v)
+  numVertices: number;        // Number of vertices
+  numTriangles: number;       // Number of triangles
+}
+
+/**
  * 🔧 修正版: Inverse Texture Mapping
  */
 export class InverseTextureMapper {

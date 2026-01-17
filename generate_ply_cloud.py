@@ -247,6 +247,41 @@ def save_web_compatible_ply(ubody_gaussians, output_dir, faces=None):
     return output_path, num_points
 
 
+def save_uv_coords(ubody_gaussians, output_dir):
+    """
+    SMPLX頂点のUV座標をバイナリファイルとして保存
+
+    出力フォーマット: Float32Array [num_vertices * 2]
+    各頂点に対して (u, v) の順で格納
+
+    gvrm.tsのWebGLUVRasterizerで使用
+    """
+    import numpy as np
+    import os
+
+    # SMPLX頂点のUV座標を取得
+    # vertex_uv_coord: [num_vertices, 2] (u, v)
+    vertex_uv_coord = ubody_gaussians.smplx.vertex_uv_coord.detach().cpu().numpy()
+
+    # Float32で保存
+    uv_coords = vertex_uv_coord.astype(np.float32).flatten()
+
+    output_path = os.path.join(output_dir, 'uv_coords.bin')
+
+    with open(output_path, 'wb') as f:
+        f.write(uv_coords.tobytes())
+
+    num_vertices = vertex_uv_coord.shape[0]
+
+    print(f"    ✅ uv_coords.bin 保存完了")
+    print(f"       頂点数: {num_vertices:,}")
+    print(f"       UV範囲: u=[{vertex_uv_coord[:, 0].min():.4f}, {vertex_uv_coord[:, 0].max():.4f}], "
+          f"v=[{vertex_uv_coord[:, 1].min():.4f}, {vertex_uv_coord[:, 1].max():.4f}]")
+    print(f"       ファイルサイズ: {len(uv_coords) * 4 / 1024:.1f} KB")
+
+    return output_path, num_vertices
+
+
 def verify_ply_format(ply_path):
     """PLYファイルの形式を検証"""
     import struct
@@ -602,6 +637,12 @@ def generate_ply(
                             print(f"    ✅ 三角形数: {web_verification['face_count']:,}")
                             print(f"    ✅ プロパティ数: {web_verification['property_count']} (期待: 17)")
                             print(f"    📊 ファイルサイズ: {web_verification['file_size_mb']:.2f} MB")
+
+                    # UV座標を保存（WebGLUVRasterizer用）
+                    print("  💾 UV座標 (uv_coords.bin) を保存中...")
+                    uv_coords_path, uv_num_vertices = save_uv_coords(ubody_gaussians, video_output_dir)
+                    ply_files.append('uv_coords.bin')
+
                 except Exception as e:
                     print(f"    ❌ Web PLY保存エラー: {e}")
                     import traceback
