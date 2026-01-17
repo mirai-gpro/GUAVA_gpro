@@ -179,7 +179,7 @@ def generate_ply(
     print(f"モデル読み込み完了: {base_model}")
 
     # --- データセット設定 ---
-    OmegaConf.set_readonly(meta_cfg['DATASET'], False)
+    # ConfigDictは通常のdictを返すため、直接設定可能
     meta_cfg['DATASET']['data_path'] = data_path
 
     test_dataset = TrackedData_infer(cfg=meta_cfg, split='test', device=device, test_full=True)
