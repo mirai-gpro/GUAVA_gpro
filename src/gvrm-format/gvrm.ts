@@ -10,6 +10,7 @@ import { InverseTextureMapper } from './inverse-texture-mapping';
 import { NeuralRefiner } from './neural-refiner';
 import { WebGLDisplay } from './webgl-display';
 import { GSViewer } from './gs';
+import { GSCoarseRenderer } from './gs-coarse-renderer';
 
 interface PLYData {
   vertices: Float32Array;
@@ -76,6 +77,7 @@ export class GVRM {
   private neuralRefiner: NeuralRefiner;
   private display: WebGLDisplay | null = null;
   private gsViewer: GSViewer | null = null;
+  private gsCoarseRenderer: GSCoarseRenderer | null = null;
 
   private plyData: PLYData | null = null;
   private templateMesh: EHMMesh | null = null;
@@ -94,6 +96,13 @@ export class GVRM {
 
   // ID embedding for neural refiner (stored during feature extraction)
   private idEmbedding: Float32Array | null = null;
+
+  // Camera config (stored for GS coarse renderer)
+  private cameraConfig: {
+    position: [number, number, number];
+    target: [number, number, number];
+    fov: number;
+  } | null = null;
 
   /**
    * コンストラクタ
@@ -191,6 +200,13 @@ export class GVRM {
     console.log('[GVRM] Loading source camera config for coordinate alignment...');
     const sourceCameraConfig = await this.loadSourceCameraConfig();
     console.log('[GVRM] Source camera target:', sourceCameraConfig.target);
+
+    // Store camera config for GS coarse renderer
+    this.cameraConfig = {
+      position: sourceCameraConfig.position,
+      target: sourceCameraConfig.target,
+      fov: sourceCameraConfig.fov
+    };
 
     // ========== Step 0.5: Load PLY file ==========
     // Use configurable templatePath (concierge-controller.ts互換)
@@ -406,10 +422,23 @@ export class GVRM {
 
     console.log('[GVRM] ✅ GSViewer created');
 
-    // ========== Step 8: Generate Coarse Feature Map ==========
-    console.log('[GVRM] Step 8: Generating Coarse Feature Map...');
-    // (GSViewer will generate this during rendering)
-    console.log('[GVRM] ✅ Coarse Feature Map generated');
+    // ========== Step 7.5: Create GS Coarse Renderer ==========
+    console.log('[GVRM] Step 7.5: Creating GS Coarse Renderer (WebGL統一)...');
+
+    if (!this.cameraConfig) {
+      throw new Error('[GVRM] Camera config not loaded');
+    }
+
+    this.gsCoarseRenderer = new GSCoarseRenderer(this.gsViewer, {
+      position: this.cameraConfig.position,
+      target: this.cameraConfig.target,
+      fov: this.cameraConfig.fov,
+      aspect: 1.0,  // 512x512 square
+      near: 0.1,
+      far: 100.0
+    });
+
+    console.log('[GVRM] ✅ GSCoarseRenderer created (WebGL統一パイプライン)');
 
     // ========== Step 9: GPU UV Rasterization ==========
     console.log('[GVRM] Step 9: GPU UV Rasterization...');
@@ -618,10 +647,11 @@ export class GVRM {
 
   /**
    * 1フレームをレンダリング
-   * パイプライン: Coarse Feature Map -> NeuralRefiner -> WebGLDisplay
+   * WebGL統一パイプライン: GS Coarse Pass -> NeuralRefiner -> WebGLDisplay
+   * 技術仕様書準拠: Canvas 2D 排除、全てWebGL内で完結
    */
   async renderFrame(): Promise<void> {
-    if (!this.initialized || !this.templateGaussians) {
+    if (!this.initialized) {
       console.error('[GVRM] renderFrame: Not initialized');
       return;
     }
@@ -636,79 +666,35 @@ export class GVRM {
       return;
     }
 
+    if (!this.gsCoarseRenderer) {
+      console.error('[GVRM] renderFrame: GSCoarseRenderer not available');
+      return;
+    }
+
     try {
-      console.log('[GVRM] renderFrame: Starting render pipeline...');
+      console.log('[GVRM] renderFrame: Starting WebGL統一パイプライン...');
 
-      // Step 1: Generate coarse feature map (32ch, 512x512)
-      // For now, create a feature map from latent data
-      // TODO: Implement proper Gaussian splatting rendering
-      console.log('[GVRM] renderFrame: Step 1 - Generating coarse feature map...');
-      const coarseFeatureMap = this.generateCoarseFeatureMap();
-      console.log('[GVRM] renderFrame: Coarse feature map size:', coarseFeatureMap.length, '(expected:', 32 * 512 * 512, ')');
+      // Step 1: GS Coarse Pass (WebGL)
+      // 8パス × 4ch = 32ch feature map をGPUでレンダリング
+      console.log('[GVRM] renderFrame: Step 1 - GS Coarse Pass (WebGL 8-pass)...');
+      const coarseFeatureMap = this.gsCoarseRenderer.renderCoarseFeatureMap();
+      console.log('[GVRM] renderFrame: Coarse feature map:', coarseFeatureMap.length, '(expected:', 32 * 512 * 512, ')');
 
-      // Step 2: Neural refinement (U-Net based)
+      // Step 2: Neural Refiner (ONNX Runtime)
+      // 32ch feature map + ID embedding → RGB画像
       console.log('[GVRM] renderFrame: Step 2 - NeuralRefiner.run()...');
       const refinedRgb = await this.neuralRefiner.run(coarseFeatureMap, this.idEmbedding);
-      console.log('[GVRM] renderFrame: Refined RGB size:', refinedRgb.length, '(expected:', 512 * 512 * 3, ')');
+      console.log('[GVRM] renderFrame: Refined RGB:', refinedRgb.length, '(expected:', 512 * 512 * 3, ')');
 
-      // Step 3: Display to canvas
-      console.log('[GVRM] renderFrame: Step 3 - WebGLDisplay.display()...');
+      // Step 3: WebGL Display
+      // RGB画像をWebGL textureとして直接表示（Canvas 2D不使用）
+      console.log('[GVRM] renderFrame: Step 3 - WebGLDisplay (no Canvas 2D)...');
       this.display.display(refinedRgb, 1);
-      console.log('[GVRM] renderFrame: ✅ Display complete');
+      console.log('[GVRM] renderFrame: ✅ WebGL統一パイプライン完了');
 
     } catch (error) {
       console.error('[GVRM] renderFrame: Error during render:', error);
     }
-  }
-
-  /**
-   * Generate coarse feature map from latent data
-   * This is a placeholder - proper implementation requires Gaussian splatting rendering
-   */
-  private generateCoarseFeatureMap(): Float32Array {
-    const width = 512;
-    const height = 512;
-    const channels = 32;
-    const featureMap = new Float32Array(channels * width * height);
-
-    if (!this.templateGaussians || !this.plyData) {
-      console.warn('[GVRM] generateCoarseFeatureMap: No data available, returning zeros');
-      return featureMap;
-    }
-
-    const latents = this.templateGaussians.latents;
-    const numVertices = latents.length / 32;
-
-    console.log('[GVRM] generateCoarseFeatureMap: Creating feature map from', numVertices, 'vertices');
-
-    // Simple approach: scatter latent features onto the feature map
-    // This is a placeholder - proper implementation needs GPU-based splatting
-
-    // For now, fill with mean values from the latent features
-    // to give the neural refiner something to work with
-    const meanLatent = new Float32Array(32);
-    for (let v = 0; v < numVertices; v++) {
-      for (let c = 0; c < 32; c++) {
-        meanLatent[c] += latents[v * 32 + c];
-      }
-    }
-    for (let c = 0; c < 32; c++) {
-      meanLatent[c] /= numVertices;
-    }
-
-    console.log('[GVRM] generateCoarseFeatureMap: Mean latent sample:',
-      Array.from(meanLatent.slice(0, 8)).map(v => v.toFixed(4)));
-
-    // Fill the feature map with the mean values (simple placeholder)
-    // NCHW format: [32, 512, 512]
-    for (let c = 0; c < channels; c++) {
-      const channelOffset = c * width * height;
-      for (let i = 0; i < width * height; i++) {
-        featureMap[channelOffset + i] = meanLatent[c];
-      }
-    }
-
-    return featureMap;
   }
 
   /**
@@ -1010,7 +996,8 @@ export class GVRM {
     if (this.neuralRefiner) this.neuralRefiner.dispose();
     if (this.display) this.display.dispose();
     if (this.gsViewer) this.gsViewer.dispose();
-    
+    if (this.gsCoarseRenderer) this.gsCoarseRenderer.dispose();
+
     this.initialized = false;
     console.log('[GVRM] Disposed');
   }
