@@ -143,13 +143,23 @@ export class GVRM {
     });
 
     try {
-      // Initialize display if container was provided
+      // Auto-detect display container if not provided (concierge-controller.ts互換)
+      if (!this.displayContainer) {
+        console.log('[GVRM] No container in config, auto-detecting #avatar3DContainer...');
+        const autoContainer = document.querySelector('#avatar3DContainer') as HTMLElement;
+        if (autoContainer) {
+          this.displayContainer = autoContainer;
+          console.log('[GVRM] ✅ Auto-detected container: #avatar3DContainer');
+        }
+      }
+
+      // Initialize display if container is available
       if (this.displayContainer) {
         console.log('[GVRM] Initializing WebGL display...');
         this.display = new WebGLDisplay(this.displayContainer, 512, 512);
         console.log('[GVRM] ✅ WebGL display initialized');
       } else {
-        console.warn('[GVRM] No display container provided, skipping display initialization');
+        console.warn('[GVRM] No display container found, skipping display initialization');
       }
 
       console.log('[GVRM] 🚀 Starting GUAVA Pipeline (WebGL GPU mode)...');
