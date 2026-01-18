@@ -92,6 +92,9 @@ export class GVRM {
   // Lip-sync state
   private currentLipSyncLevel: number = 0;
 
+  // ID embedding for neural refiner (stored during feature extraction)
+  private idEmbedding: Float32Array | null = null;
+
   /**
    * コンストラクタ
    * @param displayContainer 表示コンテナ（オプション、init()のconfigでも指定可能）
@@ -169,6 +172,11 @@ export class GVRM {
 
       this.initialized = true;
       console.log('[GVRM] ✅ Initialization successful');
+
+      // ========== Auto-render after initialization ==========
+      console.log('[GVRM] 🎬 Starting initial render...');
+      await this.renderFrame();
+      console.log('[GVRM] ✅ Initial render complete');
 
     } catch (error) {
       console.error('[GVRM] ❌ Initialization failed:', error);
@@ -251,8 +259,12 @@ export class GVRM {
       templateVertexCount,
       128
     );
-    
+
+    // Store ID embedding for neural refiner
+    this.idEmbedding = idEmbedding;
+
     console.log('[GVRM] ✅ Appearance features extracted');
+    console.log('[GVRM] ID embedding stored:', this.idEmbedding.length, 'dimensions');
 
     // ========== Step 4: Generate Template Gaussians ==========
     console.log('[GVRM] Step 4: Generating Template Gaussians...');
@@ -600,24 +612,103 @@ export class GVRM {
     return result;
   }
 
-  async render(targetImageUrl: string): Promise<ImageData | null> {
-    if (!this.initialized || !this.gsViewer) {
-      throw new Error('[GVRM] Not initialized');
+  async render(targetImageUrl?: string): Promise<void> {
+    await this.renderFrame();
+  }
+
+  /**
+   * 1フレームをレンダリング
+   * パイプライン: Coarse Feature Map -> NeuralRefiner -> WebGLDisplay
+   */
+  async renderFrame(): Promise<void> {
+    if (!this.initialized || !this.templateGaussians) {
+      console.error('[GVRM] renderFrame: Not initialized');
+      return;
     }
 
     if (!this.display) {
-      console.warn('[GVRM] No display available, skipping render');
-      return null;
+      console.warn('[GVRM] renderFrame: No display available');
+      return;
     }
 
-    // Step 1: Render coarse feature map
-    const coarseFeatureMap = this.gsViewer.render();
+    if (!this.idEmbedding) {
+      console.error('[GVRM] renderFrame: ID embedding not available');
+      return;
+    }
 
-    // Step 2: Neural refinement
-    const refinedImage = await this.neuralRefiner.refine(coarseFeatureMap);
+    try {
+      console.log('[GVRM] renderFrame: Starting render pipeline...');
 
-    // Step 3: Display
-    return this.display.display(refinedImage);
+      // Step 1: Generate coarse feature map (32ch, 512x512)
+      // For now, create a feature map from latent data
+      // TODO: Implement proper Gaussian splatting rendering
+      console.log('[GVRM] renderFrame: Step 1 - Generating coarse feature map...');
+      const coarseFeatureMap = this.generateCoarseFeatureMap();
+      console.log('[GVRM] renderFrame: Coarse feature map size:', coarseFeatureMap.length, '(expected:', 32 * 512 * 512, ')');
+
+      // Step 2: Neural refinement (U-Net based)
+      console.log('[GVRM] renderFrame: Step 2 - NeuralRefiner.run()...');
+      const refinedRgb = await this.neuralRefiner.run(coarseFeatureMap, this.idEmbedding);
+      console.log('[GVRM] renderFrame: Refined RGB size:', refinedRgb.length, '(expected:', 512 * 512 * 3, ')');
+
+      // Step 3: Display to canvas
+      console.log('[GVRM] renderFrame: Step 3 - WebGLDisplay.display()...');
+      this.display.display(refinedRgb, 1);
+      console.log('[GVRM] renderFrame: ✅ Display complete');
+
+    } catch (error) {
+      console.error('[GVRM] renderFrame: Error during render:', error);
+    }
+  }
+
+  /**
+   * Generate coarse feature map from latent data
+   * This is a placeholder - proper implementation requires Gaussian splatting rendering
+   */
+  private generateCoarseFeatureMap(): Float32Array {
+    const width = 512;
+    const height = 512;
+    const channels = 32;
+    const featureMap = new Float32Array(channels * width * height);
+
+    if (!this.templateGaussians || !this.plyData) {
+      console.warn('[GVRM] generateCoarseFeatureMap: No data available, returning zeros');
+      return featureMap;
+    }
+
+    const latents = this.templateGaussians.latents;
+    const numVertices = latents.length / 32;
+
+    console.log('[GVRM] generateCoarseFeatureMap: Creating feature map from', numVertices, 'vertices');
+
+    // Simple approach: scatter latent features onto the feature map
+    // This is a placeholder - proper implementation needs GPU-based splatting
+
+    // For now, fill with mean values from the latent features
+    // to give the neural refiner something to work with
+    const meanLatent = new Float32Array(32);
+    for (let v = 0; v < numVertices; v++) {
+      for (let c = 0; c < 32; c++) {
+        meanLatent[c] += latents[v * 32 + c];
+      }
+    }
+    for (let c = 0; c < 32; c++) {
+      meanLatent[c] /= numVertices;
+    }
+
+    console.log('[GVRM] generateCoarseFeatureMap: Mean latent sample:',
+      Array.from(meanLatent.slice(0, 8)).map(v => v.toFixed(4)));
+
+    // Fill the feature map with the mean values (simple placeholder)
+    // NCHW format: [32, 512, 512]
+    for (let c = 0; c < channels; c++) {
+      const channelOffset = c * width * height;
+      for (let i = 0; i < width * height; i++) {
+        featureMap[channelOffset + i] = meanLatent[c];
+      }
+    }
+
+    return featureMap;
   }
 
   /**
