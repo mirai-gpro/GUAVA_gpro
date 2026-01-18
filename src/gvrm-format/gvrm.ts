@@ -54,6 +54,19 @@ export interface CameraParams {
   screenHeight: number;
 }
 
+/**
+ * GVRM初期化設定
+ * concierge-controller.ts互換
+ */
+export interface GVRMConfig {
+  /** PLYテンプレートファイルのパス (例: '/assets/avatar_24p.ply') */
+  templatePath?: string;
+  /** ソース画像のパス (例: '/assets/source.png') */
+  imagePath?: string;
+  /** 表示コンテナ要素 */
+  container?: HTMLElement;
+}
+
 export class GVRM {
   private imageEncoder: ImageEncoder;
   private templateDecoder: TemplateDecoder;
@@ -68,10 +81,21 @@ export class GVRM {
   private templateMesh: EHMMesh | null = null;
   private templateGaussians: GaussianData | null = null;
   private uvGaussians: UVGaussianData | null = null;
-  
+
   private initialized = false;
   private displayContainer: HTMLElement | null = null;
 
+  // Configurable asset paths (concierge-controller.ts互換)
+  private templatePath: string = '/assets/avatar_web.ply';
+  private imagePath: string = '/assets/source.png';
+
+  // Lip-sync state
+  private currentLipSyncLevel: number = 0;
+
+  /**
+   * コンストラクタ
+   * @param displayContainer 表示コンテナ（オプション、init()のconfigでも指定可能）
+   */
   constructor(displayContainer?: HTMLElement) {
     console.log('[GVRM] Constructor called (WebGL GPU mode)');
 
@@ -85,10 +109,38 @@ export class GVRM {
     this.neuralRefiner = new NeuralRefiner();
   }
 
-  async init(): Promise<void> {
+  /**
+   * 初期化
+   * @param config 設定オブジェクト（concierge-controller.ts互換）
+   */
+  async init(config?: GVRMConfig): Promise<void> {
     if (this.initialized) return;
 
     console.log('[GVRM] init() called');
+
+    // Apply config if provided (concierge-controller.ts互換)
+    if (config) {
+      console.log('[GVRM] Config provided:', {
+        templatePath: config.templatePath,
+        imagePath: config.imagePath,
+        hasContainer: !!config.container
+      });
+
+      if (config.templatePath) {
+        this.templatePath = config.templatePath;
+      }
+      if (config.imagePath) {
+        this.imagePath = config.imagePath;
+      }
+      if (config.container) {
+        this.displayContainer = config.container;
+      }
+    }
+
+    console.log('[GVRM] Using paths:', {
+      template: this.templatePath,
+      image: this.imagePath
+    });
 
     try {
       // Initialize display if container was provided
@@ -123,8 +175,8 @@ export class GVRM {
     console.log('[GVRM] Source camera target:', sourceCameraConfig.target);
 
     // ========== Step 0.5: Load PLY file ==========
-    const plyUrl = '/assets/avatar_web.ply';
-    this.plyData = await this.loadPLY(plyUrl, sourceCameraConfig.target);
+    // Use configurable templatePath (concierge-controller.ts互換)
+    this.plyData = await this.loadPLY(this.templatePath, sourceCameraConfig.target);
     console.log('[GVRM] PLY loaded:', this.plyData.vertices.length / 3, 'vertices');
 
     // ========== Step 1: Load UV coordinates ==========
@@ -170,11 +222,11 @@ export class GVRM {
     // ========== Step 3: Extract appearance features ==========
     console.log('[GVRM] Step 3: Extracting appearance features...');
 
-    const sourceImageUrl = '/assets/source.png';
+    // Use configurable imagePath (concierge-controller.ts互換)
     // Note: sourceCameraConfig already loaded at Step 0 for coordinate alignment
 
     const { projectionFeature, idEmbedding } = await this.imageEncoder.extractFeaturesWithSourceCamera(
-      sourceImageUrl,
+      this.imagePath,
       sourceCameraConfig,
       templateVertices,
       templateVertexCount,
@@ -547,6 +599,29 @@ export class GVRM {
 
     // Step 3: Display
     return this.display.display(refinedImage);
+  }
+
+  /**
+   * リップシンク更新（concierge-controller.ts互換）
+   * オーディオレベルに基づいて口の動きを更新
+   * @param level 正規化されたオーディオレベル (0.0 - 1.0)
+   */
+  updateLipSync(level: number): void {
+    // Clamp level to valid range
+    this.currentLipSyncLevel = Math.max(0, Math.min(1, level));
+
+    // TODO: 将来的にGSViewerにリップシンクパラメータを渡す
+    // 現在はレベルを保存するのみ
+    if (this.gsViewer) {
+      // gsViewer.setLipSyncLevel(this.currentLipSyncLevel);
+    }
+  }
+
+  /**
+   * 現在のリップシンクレベルを取得
+   */
+  getLipSyncLevel(): number {
+    return this.currentLipSyncLevel;
   }
 
   private async loadPLY(url: string, cameraTarget?: [number, number, number]): Promise<PLYData> {
