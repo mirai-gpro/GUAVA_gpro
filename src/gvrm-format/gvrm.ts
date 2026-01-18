@@ -876,16 +876,27 @@ export class GVRM {
     fov: number;
     imageWidth: number;
     imageHeight: number;
+    debug?: {
+      R_matrix?: number[][];
+      T_vector?: number[];
+    };
   }> {
     const response = await fetch('/assets/source_camera.json');
     const config = await response.json();
+    
+    console.log('[GVRM] Source camera config loaded:', {
+      hasDebug: !!config.debug,
+      hasRMatrix: !!config.debug?.R_matrix,
+      hasTVector: !!config.debug?.T_vector
+    });
     
     return {
       position: config.position,
       target: config.target,
       fov: config.fov,
       imageWidth: config.imageWidth,
-      imageHeight: config.imageHeight
+      imageHeight: config.imageHeight,
+      debug: config.debug
     };
   }
 
