@@ -113,10 +113,23 @@ export class GSCoarseRenderer {
     const geometry = this.gsViewer.mesh.geometry;
     geometry.computeBoundingBox();
     if (geometry.boundingBox) {
-      console.log('[GSCoarseRenderer] Debug - Mesh bounding box:', {
-        min: geometry.boundingBox.min.toArray(),
-        max: geometry.boundingBox.max.toArray()
-      });
+      const min = geometry.boundingBox.min;
+      const max = geometry.boundingBox.max;
+      console.log('[GSCoarseRenderer] Debug - Mesh bounding box:');
+      console.log('  min:', min.x.toFixed(4), min.y.toFixed(4), min.z.toFixed(4));
+      console.log('  max:', max.x.toFixed(4), max.y.toFixed(4), max.z.toFixed(4));
+      console.log('  size:', (max.x - min.x).toFixed(4), (max.y - min.y).toFixed(4), (max.z - min.z).toFixed(4));
+    }
+
+    // Check if mesh is in camera frustum
+    const frustum = new THREE.Frustum();
+    const projScreenMatrix = new THREE.Matrix4();
+    projScreenMatrix.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+    frustum.setFromProjectionMatrix(projScreenMatrix);
+
+    if (geometry.boundingBox) {
+      const isInFrustum = frustum.intersectsBox(geometry.boundingBox);
+      console.log('[GSCoarseRenderer] Debug - Mesh in frustum:', isInFrustum);
     }
 
     // 一時バッファ（各パスのRGBA読み取り用）
