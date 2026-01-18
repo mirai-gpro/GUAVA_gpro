@@ -282,6 +282,40 @@ def save_uv_coords(ubody_gaussians, output_dir):
     return output_path, num_vertices
 
 
+def save_smplx_faces(ubody_gaussians, output_dir):
+    """
+    SMPLXメッシュの三角形(faces)データをバイナリファイルとして保存
+
+    出力フォーマット: Uint32Array [num_faces * 3]
+    各三角形に対して (v0, v1, v2) の順で格納
+
+    gvrm.tsのWebGLUVRasterizerで使用
+    """
+    import numpy as np
+    import os
+
+    # SMPLXメッシュの三角形データを取得
+    # faces_tensor: [num_faces, 3] (v0, v1, v2)
+    faces = ubody_gaussians.smplx.faces_tensor.cpu().numpy()
+
+    # Uint32で保存
+    faces_flat = faces.astype(np.uint32).flatten()
+
+    output_path = os.path.join(output_dir, 'smplx_faces.bin')
+
+    with open(output_path, 'wb') as f:
+        f.write(faces_flat.tobytes())
+
+    num_faces = faces.shape[0]
+
+    print(f"    ✅ smplx_faces.bin 保存完了")
+    print(f"       三角形数: {num_faces:,}")
+    print(f"       頂点インデックス範囲: [{faces.min()}, {faces.max()}]")
+    print(f"       ファイルサイズ: {len(faces_flat) * 4 / 1024:.1f} KB")
+
+    return output_path, num_faces
+
+
 def verify_ply_format(ply_path):
     """PLYファイルの形式を検証"""
     import struct
@@ -642,6 +676,11 @@ def generate_ply(
                     print("  💾 UV座標 (uv_coords.bin) を保存中...")
                     uv_coords_path, uv_num_vertices = save_uv_coords(ubody_gaussians, video_output_dir)
                     ply_files.append('uv_coords.bin')
+
+                    # SMPLX三角形データを保存（WebGLUVRasterizer用）
+                    print("  💾 SMPLX Faces (smplx_faces.bin) を保存中...")
+                    faces_path, num_faces = save_smplx_faces(ubody_gaussians, video_output_dir)
+                    ply_files.append('smplx_faces.bin')
 
                 except Exception as e:
                     print(f"    ❌ Web PLY保存エラー: {e}")
