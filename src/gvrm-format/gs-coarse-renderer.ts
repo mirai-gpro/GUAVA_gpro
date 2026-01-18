@@ -28,6 +28,14 @@ export class GSCoarseRenderer {
     far: number;
   }) {
     console.log('[GSCoarseRenderer] Initializing WebGL coarse pass...');
+    console.log('[GSCoarseRenderer] Camera config:', {
+      position: cameraConfig.position,
+      target: cameraConfig.target,
+      fov: cameraConfig.fov,
+      aspect: cameraConfig.aspect,
+      near: cameraConfig.near,
+      far: cameraConfig.far
+    });
 
     this.gsViewer = gsViewer;
 
@@ -89,6 +97,27 @@ export class GSCoarseRenderer {
     const featureMap = new Float32Array(channels * size * size);
 
     console.log('[GSCoarseRenderer] Starting 8-pass rendering...');
+
+    // Debug: Log mesh and camera info
+    const meshPos = this.gsViewer.mesh.position;
+    const camPos = this.camera.position;
+    const camTarget = new THREE.Vector3();
+    this.camera.getWorldDirection(camTarget);
+    console.log('[GSCoarseRenderer] Debug - Mesh position:', meshPos.toArray());
+    console.log('[GSCoarseRenderer] Debug - Camera position:', camPos.toArray());
+    console.log('[GSCoarseRenderer] Debug - Camera direction:', camTarget.toArray());
+    console.log('[GSCoarseRenderer] Debug - Camera FOV:', this.camera.fov);
+    console.log('[GSCoarseRenderer] Debug - Mesh in scene:', this.scene.children.includes(this.gsViewer.mesh));
+
+    // Check mesh geometry bounds
+    const geometry = this.gsViewer.mesh.geometry;
+    geometry.computeBoundingBox();
+    if (geometry.boundingBox) {
+      console.log('[GSCoarseRenderer] Debug - Mesh bounding box:', {
+        min: geometry.boundingBox.min.toArray(),
+        max: geometry.boundingBox.max.toArray()
+      });
+    }
 
     // 一時バッファ（各パスのRGBA読み取り用）
     const pixelBuffer = new Float32Array(size * size * 4);
