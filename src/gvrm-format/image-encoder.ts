@@ -646,18 +646,24 @@ export class ImageEncoder {
       viewMatrix = this.computeLookAtMatrix(position, target);
     }
 
-    // Projection Matrix
+    // Projection Matrix (WebGL column-major形式)
+    // Standard OpenGL perspective projection
     const fovRad = fov * Math.PI / 180;
     const aspect = featureMapWidth / featureMapHeight;
     const f = 1 / Math.tan(fovRad / 2);
     const near = 0.01;
     const far = 100;
 
+    // Column-major storage:
+    // Column 0: [f/aspect, 0, 0, 0]
+    // Column 1: [0, f, 0, 0]
+    // Column 2: [0, 0, (far+near)/(near-far), -1]
+    // Column 3: [0, 0, (2*far*near)/(near-far), 0]
     const projMatrix = new Float32Array([
-      f / aspect, 0,  0,   0,
-      0,          f,  0,   0,
-      0,          0,  (far + near) / (near - far),  (2 * far * near) / (near - far),
-      0,          0,  -1,  0
+      f / aspect, 0,  0,  0,
+      0,          f,  0,  0,
+      0,          0,  (far + near) / (near - far),  -1,
+      0,          0,  (2 * far * near) / (near - far),  0
     ]);
 
     console.log('[ImageEncoder] Camera parameters:', {
