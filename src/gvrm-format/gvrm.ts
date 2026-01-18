@@ -404,27 +404,33 @@ export class GVRM {
     // ========== Step 7: Create Gaussian Splatting Viewer ==========
     console.log('[GVRM] Step 7: Creating Gaussian Splatting Viewer...');
 
-    const plyVertexCount = this.plyData.vertices.length / 3;
+    // Template Gaussians用の頂点数（SMPLX頂点 = 10,595）
+    // PLY全体（198,360）ではなく、Template Decoder出力に対応する頂点のみ使用
+    const templateVertexCount2 = this.templateGaussians.latents.length / 32;
+    console.log('[GVRM] GSViewer vertex count:', templateVertexCount2, '(template vertices only)');
 
     // GSViewerが期待するGaussianDataオブジェクトを構築
     // スキニングなしの場合: boneIndices[0]=0, boneWeights[0]=1.0 で単位行列を使用
-    const boneIndices = new Float32Array(plyVertexCount * 4);  // 全てゼロ（ボーン0を参照）
-    const boneWeights = new Float32Array(plyVertexCount * 4);
+    const boneIndices = new Float32Array(templateVertexCount2 * 4);  // 全てゼロ（ボーン0を参照）
+    const boneWeights = new Float32Array(templateVertexCount2 * 4);
 
     // 各頂点の最初のウェイトを1.0に設定（スキニングで単位行列を適用）
-    for (let i = 0; i < plyVertexCount; i++) {
+    for (let i = 0; i < templateVertexCount2; i++) {
       boneWeights[i * 4] = 1.0;  // 最初のウェイトのみ1.0
     }
 
+    // Template頂点のpositionのみを抽出（最初の10,595頂点）
+    const templatePositions = this.plyData.vertices.slice(0, templateVertexCount2 * 3);
+
     const gaussianData = {
-      positions: this.plyData.vertices,
+      positions: templatePositions,  // Template頂点のみ
       latents: this.templateGaussians.latents,
       opacity: this.templateGaussians.opacities,
       scale: this.templateGaussians.scales,
       rotation: this.templateGaussians.rotations,
       boneIndices: boneIndices,
       boneWeights: boneWeights,
-      vertexCount: plyVertexCount
+      vertexCount: templateVertexCount2
     };
 
     this.gsViewer = new GSViewer(gaussianData);
