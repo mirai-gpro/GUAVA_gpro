@@ -117,18 +117,23 @@ export class GVRM {
   private async loadAssets(): Promise<void> {
     console.log('[GVRM] Loading assets...');
 
-    // ========== Step 0: Load PLY file ==========
+    // ========== Step 0: Load source camera config first (needed for coordinate alignment) ==========
+    console.log('[GVRM] Loading source camera config for coordinate alignment...');
+    const sourceCameraConfig = await this.loadSourceCameraConfig();
+    console.log('[GVRM] Source camera target:', sourceCameraConfig.target);
+
+    // ========== Step 0.5: Load PLY file ==========
     const plyUrl = '/assets/avatar_web.ply';
-    this.plyData = await this.loadPLY(plyUrl);
+    this.plyData = await this.loadPLY(plyUrl, sourceCameraConfig.target);
     console.log('[GVRM] PLY loaded:', this.plyData.vertices.length / 3, 'vertices');
 
-    // ========== Step 0.5: Load UV coordinates ==========
+    // ========== Step 1: Load UV coordinates ==========
     const uvCoordsUrl = '/assets/uv_coords.bin';
     this.plyData.uvCoords = await this.loadUVCoords(uvCoordsUrl);
     console.log('[GVRM] UV coords loaded:', this.plyData.uvCoords.length / 2, 'vertices');
 
-    // ========== Step 1: Initialize modules ==========
-    console.log('[GVRM] Step 1: Initializing modules...');
+    // ========== Step 2: Initialize modules ==========
+    console.log('[GVRM] Step 2: Initializing modules...');
     
     console.log('[GVRM]   - Image Encoder (DINOv2)...');
     await this.imageEncoder.init();
@@ -162,12 +167,12 @@ export class GVRM {
     
     console.log('[GVRM] ✅ All modules initialized');
 
-    // ========== Step 2: Extract appearance features ==========
-    console.log('[GVRM] Step 2: Extracting appearance features...');
-    
+    // ========== Step 3: Extract appearance features ==========
+    console.log('[GVRM] Step 3: Extracting appearance features...');
+
     const sourceImageUrl = '/assets/source.png';
-    const sourceCameraConfig = await this.loadSourceCameraConfig();
-    
+    // Note: sourceCameraConfig already loaded at Step 0 for coordinate alignment
+
     const { projectionFeature, idEmbedding } = await this.imageEncoder.extractFeaturesWithSourceCamera(
       sourceImageUrl,
       sourceCameraConfig,
@@ -178,8 +183,8 @@ export class GVRM {
     
     console.log('[GVRM] ✅ Appearance features extracted');
 
-    // ========== Step 3: Generate Template Gaussians ==========
-    console.log('[GVRM] Step 3: Generating Template Gaussians...');
+    // ========== Step 4: Generate Template Gaussians ==========
+    console.log('[GVRM] Step 4: Generating Template Gaussians...');
     
     const templateOutput = await this.templateDecoder.generate(
       projectionFeature,
@@ -199,8 +204,8 @@ export class GVRM {
       features: '32ch latent'
     });
 
-    // ========== Step 4: Prepare EHM mesh ==========
-    console.log('[GVRM] Step 4: Preparing EHM mesh...');
+    // ========== Step 5: Prepare EHM mesh ==========
+    console.log('[GVRM] Step 5: Preparing EHM mesh...');
     console.log('[GVRM]   📖 Paper: "Given the tracked mesh..." = EHM mesh');
     
     this.templateMesh = {
@@ -289,16 +294,16 @@ export class GVRM {
     console.log('[Debug] === End of Analysis ===');
     // ========== デバッグコード終了 ==========
 
-    // ========== Step 5: Map Template Gaussians to PLY ==========
-    console.log('[GVRM] Step 5: Mapping Template Gaussians to PLY...');
+    // ========== Step 6: Map Template Gaussians to PLY ==========
+    console.log('[GVRM] Step 6: Mapping Template Gaussians to PLY...');
     
     // Map template Gaussians to PLY vertices
     // (This step combines the coarse Gaussian attributes with PLY positions)
     
     console.log('[GVRM] ✅ Template Gaussians mapped');
 
-    // ========== Step 6: Create Gaussian Splatting Viewer ==========
-    console.log('[GVRM] Step 6: Creating Gaussian Splatting Viewer...');
+    // ========== Step 7: Create Gaussian Splatting Viewer ==========
+    console.log('[GVRM] Step 7: Creating Gaussian Splatting Viewer...');
 
     const plyVertexCount = this.plyData.vertices.length / 3;
 
@@ -318,13 +323,13 @@ export class GVRM {
 
     console.log('[GVRM] ✅ GSViewer created');
 
-    // ========== Step 7: Generate Coarse Feature Map ==========
-    console.log('[GVRM] Step 7: Generating Coarse Feature Map...');
+    // ========== Step 8: Generate Coarse Feature Map ==========
+    console.log('[GVRM] Step 8: Generating Coarse Feature Map...');
     // (GSViewer will generate this during rendering)
     console.log('[GVRM] ✅ Coarse Feature Map generated');
 
-    // ========== Step 8: GPU UV Rasterization ==========
-    console.log('[GVRM] Step 8: GPU UV Rasterization...');
+    // ========== Step 9: GPU UV Rasterization ==========
+    console.log('[GVRM] Step 9: GPU UV Rasterization...');
     console.log('[GVRM]   ⚡ Using WebGL GPU for real-time rasterization');
 
     // MeshDataオブジェクトを構築
@@ -351,8 +356,8 @@ export class GVRM {
       coverage: (uvMapping.validMask.reduce((sum, v) => sum + v, 0) / (1024 * 1024) * 100).toFixed(1) + '%'
     });
 
-    // ========== Step 8.5: Initialize InverseTextureMapper ==========
-    console.log('[GVRM] Step 8.5: Initializing InverseTextureMapper...');
+    // ========== Step 9.5: Initialize InverseTextureMapper ==========
+    console.log('[GVRM] Step 9.5: Initializing InverseTextureMapper...');
 
     this.inverseMapper = new InverseTextureMapper();
     this.inverseMapper.initialize(1024, {
@@ -364,8 +369,8 @@ export class GVRM {
 
     console.log('[GVRM] ✅ InverseTextureMapper initialized');
 
-    // ========== Step 9: Inverse Texture Mapping ==========
-    console.log('[GVRM] Step 9: Inverse Texture Mapping (論文準拠)...');
+    // ========== Step 10: Inverse Texture Mapping ==========
+    console.log('[GVRM] Step 10: Inverse Texture Mapping (論文準拠)...');
     
     // Get UV branch features (32ch) from image encoder
     const uvBranchFeatures = this.imageEncoder.getUVFeatures();
@@ -381,8 +386,8 @@ export class GVRM {
     
     console.log('[GVRM] ✅ Inverse Texture Mapping preparation complete');
 
-    // ========== Step 9.5: Build 155ch UV features for UV Decoder ==========
-    console.log('[GVRM] Step 9.5: Building 155ch UV features for UV Decoder...');
+    // ========== Step 10.5: Build 155ch UV features for UV Decoder ==========
+    console.log('[GVRM] Step 10.5: Building 155ch UV features for UV Decoder...');
     console.log('[GVRM] 📖 Paper: 35ch (32 UV + 3 RGB)');
     console.log('[GVRM] 🔧 Model: 155ch (32 UV + 123 Template subset)');
     
@@ -471,8 +476,8 @@ export class GVRM {
     console.log('[GVRM] ✅ 155ch UV features built successfully');
     console.log('[GVRM] Total size:', uvFeatureMap.length, '(expected:', uvPixels * 155, ')');
 
-    // ========== Step 10: Generate UV Gaussians ==========
-    console.log('[GVRM] Step 10: Generating UV Gaussians...');
+    // ========== Step 11: Generate UV Gaussians ==========
+    console.log('[GVRM] Step 11: Generating UV Gaussians...');
 
     this.uvGaussians = await this.uvDecoder.generate(
       uvFeatureMap,
@@ -485,8 +490,8 @@ export class GVRM {
       count: this.uvGaussians.uvCount
     });
 
-    // ========== Step 11: Create Ubody Gaussians (Template ⊕ UV) ==========
-    console.log('[GVRM] Step 11: Creating Ubody Gaussians (Template ⊕ UV)...');
+    // ========== Step 12: Create Ubody Gaussians (Template ⊕ UV) ==========
+    console.log('[GVRM] Step 12: Creating Ubody Gaussians (Template ⊕ UV)...');
 
     const templateCount = this.templateGaussians.positions.length / 3;
     const uvCount = this.uvGaussians.uvCount;
@@ -544,7 +549,7 @@ export class GVRM {
     return this.display.display(refinedImage);
   }
 
-  private async loadPLY(url: string): Promise<PLYData> {
+  private async loadPLY(url: string, cameraTarget?: [number, number, number]): Promise<PLYData> {
     const response = await fetch(url);
     const arrayBuffer = await response.arrayBuffer();
     
@@ -623,25 +628,76 @@ export class GVRM {
       }
     }
     
-    // ========== 修正箇所: Auto-scaling ==========
+    // ========== 修正箇所: Auto-scaling & Coordinate Alignment ==========
     // スタックオーバーフローを回避するため、配列とスプレッド構文を使わない
-    let minY = Infinity;
-    let maxY = -Infinity;
-    
+
+    // Step 1: Calculate bounding box for scaling
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    let minZ = Infinity, maxZ = -Infinity;
+
     for (let i = 0; i < vertexCount; i++) {
+      const x = vertices[i * 3];
       const y = vertices[i * 3 + 1];
+      const z = vertices[i * 3 + 2];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
     }
-    
+
+    // Step 2: Auto-scale to target height (1.7m)
     const rawHeight = maxY - minY;
     const targetHeight = 1.7;
     const scaleFactor = targetHeight / rawHeight;
-    
+
     console.log('[GVRM] Auto-scaling... Raw height:', rawHeight.toFixed(3) + 'm', '-> Normalized:', targetHeight.toFixed(3) + 'm', '(factor:', scaleFactor.toFixed(3) + ')');
-    
+
     for (let i = 0; i < vertexCount * 3; i++) {
       vertices[i] *= scaleFactor;
+    }
+
+    // Step 3: Calculate mesh center after scaling (for coordinate alignment)
+    let sumX = 0, sumY = 0, sumZ = 0;
+    for (let i = 0; i < vertexCount; i++) {
+      sumX += vertices[i * 3];
+      sumY += vertices[i * 3 + 1];
+      sumZ += vertices[i * 3 + 2];
+    }
+
+    const meshCenterX = sumX / vertexCount;
+    const meshCenterY = sumY / vertexCount;
+    const meshCenterZ = sumZ / vertexCount;
+
+    console.log('[GVRM] Mesh center (after scaling):', {
+      x: meshCenterX.toFixed(4),
+      y: meshCenterY.toFixed(4),
+      z: meshCenterZ.toFixed(4)
+    });
+
+    // Step 4: Automatic coordinate alignment with camera target
+    if (cameraTarget) {
+      // Align mesh center with camera target
+      // X/Z: align to camera target
+      // Y: align mesh center to camera target Y (typically looking at torso)
+      const offsetX = cameraTarget[0] - meshCenterX;
+      const offsetY = cameraTarget[1] - meshCenterY;
+      const offsetZ = cameraTarget[2] - meshCenterZ;
+
+      console.log('[GVRM] Auto-alignment with camera target:', {
+        target: cameraTarget,
+        offset: [offsetX.toFixed(4), offsetY.toFixed(4), offsetZ.toFixed(4)]
+      });
+
+      for (let i = 0; i < vertexCount; i++) {
+        vertices[i * 3] += offsetX;
+        vertices[i * 3 + 1] += offsetY;
+        vertices[i * 3 + 2] += offsetZ;
+      }
+
+      console.log('[GVRM] ✅ Mesh automatically aligned to camera target (source image dependent)');
     }
     // ========== 修正終了 ==========
     
