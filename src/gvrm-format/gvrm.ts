@@ -70,14 +70,14 @@ export class GVRM {
   private uvGaussians: UVGaussianData | null = null;
   
   private initialized = false;
-  private displayCanvas: HTMLCanvasElement | null = null;
+  private displayContainer: HTMLElement | null = null;
 
-  constructor(displayCanvas?: HTMLCanvasElement) {
+  constructor(displayContainer?: HTMLElement) {
     console.log('[GVRM] Constructor called (WebGL GPU mode)');
-    
-    // Store canvas reference but don't initialize display yet
-    this.displayCanvas = displayCanvas || null;
-    
+
+    // Store container reference but don't initialize display yet
+    this.displayContainer = displayContainer || null;
+
     this.imageEncoder = new ImageEncoder();
     this.templateDecoder = new TemplateDecoder();
     this.uvDecoder = new UVDecoder();
@@ -91,15 +91,15 @@ export class GVRM {
     console.log('[GVRM] init() called');
 
     try {
-      // Initialize display if canvas was provided
-      if (this.displayCanvas) {
+      // Initialize display if container was provided
+      if (this.displayContainer) {
         console.log('[GVRM] Initializing WebGL display...');
-        this.display = new WebGLDisplay(this.displayCanvas);
-        await this.display.init();
+        this.display = new WebGLDisplay(this.displayContainer, 512, 512);
+        console.log('[GVRM] ✅ WebGL display initialized');
       } else {
-        console.warn('[GVRM] No display canvas provided, skipping display initialization');
+        console.warn('[GVRM] No display container provided, skipping display initialization');
       }
-      
+
       console.log('[GVRM] 🚀 Starting GUAVA Pipeline (WebGL GPU mode)...');
       console.log('[GVRM] 📖 Paper-compliant: Real-time UV rasterization with GPU');
 
