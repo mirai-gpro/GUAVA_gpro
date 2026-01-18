@@ -184,6 +184,15 @@ export class GVRM {
     this.plyData.uvCoords = await this.loadUVCoords(uvCoordsUrl);
     console.log('[GVRM] UV coords loaded:', this.plyData.uvCoords.length / 2, 'vertices');
 
+    // ========== Step 1.5: Load SMPLX faces (triangles) ==========
+    // PLYファイルにfacesが含まれていない場合は別途ロード
+    if (this.plyData.triangles.length === 0) {
+      console.log('[GVRM] PLY has no faces, loading from smplx_faces.bin...');
+      const facesUrl = '/assets/smplx_faces.bin';
+      this.plyData.triangles = await this.loadSMPLXFaces(facesUrl);
+      console.log('[GVRM] SMPLX faces loaded:', this.plyData.triangles.length / 3, 'triangles');
+    }
+
     // ========== Step 2: Initialize modules ==========
     console.log('[GVRM] Step 2: Initializing modules...');
     
@@ -833,22 +842,61 @@ export class GVRM {
     return uvCoords;
   }
 
+  private async loadSMPLXFaces(url: string): Promise<Uint32Array> {
+    console.log('[GVRM] Loading SMPLX faces from:', url);
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`[GVRM] Failed to load SMPLX faces: ${response.status} ${response.statusText}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const faces = new Uint32Array(arrayBuffer);
+
+    const numFaces = faces.length / 3;
+
+    // Validate face indices
+    let minIdx = Infinity, maxIdx = 0;
+    for (let i = 0; i < faces.length; i++) {
+      if (faces[i] < minIdx) minIdx = faces[i];
+      if (faces[i] > maxIdx) maxIdx = faces[i];
+    }
+
+    console.log('[GVRM] SMPLX faces stats:', {
+      triangles: numFaces,
+      indexRange: `[${minIdx}, ${maxIdx}]`
+    });
+
+    return faces;
+  }
+
   private async loadSourceCameraConfig(): Promise<{
     position: [number, number, number];
     target: [number, number, number];
     fov: number;
     imageWidth: number;
     imageHeight: number;
+    debug?: {
+      R_matrix?: number[][];
+      T_vector?: number[];
+    };
   }> {
     const response = await fetch('/assets/source_camera.json');
     const config = await response.json();
+    
+    console.log('[GVRM] Source camera config loaded:', {
+      hasDebug: !!config.debug,
+      hasRMatrix: !!config.debug?.R_matrix,
+      hasTVector: !!config.debug?.T_vector
+    });
     
     return {
       position: config.position,
       target: config.target,
       fov: config.fov,
       imageWidth: config.imageWidth,
-      imageHeight: config.imageHeight
+      imageHeight: config.imageHeight,
+      debug: config.debug
     };
   }
 

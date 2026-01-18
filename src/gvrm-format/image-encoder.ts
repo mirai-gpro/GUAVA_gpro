@@ -1,7 +1,7 @@
 // image-encoder.ts
 // DINOv2 + DINO Encoder 完全ONNX版
 // 技術仕様書 Section 3.1: 518×518入力 → 37×37パッチ(1369パッチ)
-// 修正版: 配列形式のposition/target対応
+// 修正版: Camera JSON の R_matrix/T_vector を使用
 
 import * as ort from 'onnxruntime-web';
 import { RawImage } from '@huggingface/transformers';
@@ -27,6 +27,10 @@ export interface SourceCameraConfig {
   fov: number;
   imageWidth: number;
   imageHeight: number;
+  debug?: {
+    R_matrix?: number[][];
+    T_vector?: number[];
+  };
 }
 
 export class ImageEncoder {
@@ -34,7 +38,7 @@ export class ImageEncoder {
   private encoderSession: ort.InferenceSession | null = null;
   private initialized = false;
   
-  // ? 論文準拠: 2つのブランチを保存
+  // 📖 論文準拠: 2つのブランチを保存
   private templateFeatures: Float32Array | null = null;  // 518×518×128
   private uvFeatures: Float32Array | null = null;        // 518×518×32
 
@@ -81,22 +85,22 @@ export class ImageEncoder {
         this.dinov2Session = await ort.InferenceSession.create('/assets/dinov2_518.onnx');
       }
 
-      console.log('[ImageEncoder] ?? DINOv2 input names:', this.dinov2Session.inputNames);
-      console.log('[ImageEncoder] ?? DINOv2 output names:', this.dinov2Session.outputNames);
+      console.log('[ImageEncoder] 📋 DINOv2 input names:', this.dinov2Session.inputNames);
+      console.log('[ImageEncoder] 📋 DINOv2 output names:', this.dinov2Session.outputNames);
 
       // 2. DINO Encoder ONNXモデルをロード(37×37 → 518×518)
       console.log('[ImageEncoder] Loading DINO Encoder ONNX...');
       this.encoderSession = await ort.InferenceSession.create('/assets/dino_encoder.onnx');
-      console.log('[ImageEncoder] ?? Encoder input names:', this.encoderSession.inputNames);
-      console.log('[ImageEncoder] ?? Encoder output names:', this.encoderSession.outputNames);
+      console.log('[ImageEncoder] 📋 Encoder input names:', this.encoderSession.inputNames);
+      console.log('[ImageEncoder] 📋 Encoder output names:', this.encoderSession.outputNames);
 
       this.initialized = true;
-      console.log('[ImageEncoder] ? Initialized with 37×37 patch support');
+      console.log('[ImageEncoder] ✅ Initialized with 37×37 patch support');
     } catch (error) {
-      console.error('[ImageEncoder] ? Failed to initialize:', error);
+      console.error('[ImageEncoder] ❌ Failed to initialize:', error);
       throw error;
     }
-  } // ← この閉じ括弧が抜けていました
+  }
 
   /**
    * DINOv2用の前処理(正規化)
@@ -222,11 +226,11 @@ export class ImageEncoder {
 
       // 検証: 37×37パッチであることを確認
       if (numPatches !== 37 * 37) {
-        console.error(`[ImageEncoder] ? Expected 1369 patches, got ${numPatches}`);
+        console.error(`[ImageEncoder] ❌ Expected 1369 patches, got ${numPatches}`);
         throw new Error(`Invalid patch count: ${numPatches}`);
       }
 
-      console.log('[ImageEncoder] ? DINOv2 output: 37×37 patches confirmed');
+      console.log('[ImageEncoder] ✅ DINOv2 output: 37×37 patches confirmed');
 
       // 5. パッチを2D特徴マップに変換
       const { data: featureMapData, height: fmHeight, width: fmWidth } =
@@ -266,9 +270,9 @@ export class ImageEncoder {
 
       // 検証
       if (appearanceHeight !== 518 || appearanceWidth !== 518) {
-        console.warn(`[ImageEncoder] ?? Expected 518×518, got ${appearanceWidth}×${appearanceHeight}`);
+        console.warn(`[ImageEncoder] ⚠️ Expected 518×518, got ${appearanceWidth}×${appearanceHeight}`);
       } else {
-        console.log('[ImageEncoder] ? Appearance feature map: 518×518 confirmed');
+        console.log('[ImageEncoder] ✅ Appearance feature map: 518×518 confirmed');
       }
 
       // 8. 実際の特徴マップサイズでカメラパラメータを構築
@@ -292,7 +296,7 @@ export class ImageEncoder {
       this.normalizeFeatures(projectionFeature, vertexCount, featureDim);
 
       const elapsed = performance.now() - startTime;
-      console.log(`[ImageEncoder] ? Feature extraction completed in ${elapsed.toFixed(2)}ms`);
+      console.log(`[ImageEncoder] ✅ Feature extraction completed in ${elapsed.toFixed(2)}ms`);
 
       // 統計情報
       const sampleSize = Math.min(1000, projectionFeature.length);
@@ -309,11 +313,11 @@ export class ImageEncoder {
       });
 
 
-      // ? 論文準拠: 2つのブランチに分離
+      // 📖 論文準拠: 2つのブランチに分離
       // Appendix B.2: "transform its dimensions to 32 and 128"
       const appearanceChannels = appearanceTensor.dims[1] as number;
       
-      console.log('[ImageEncoder] ?? 論文準拠: Feature branches separation');
+      console.log('[ImageEncoder] 📖 論文準拠: Feature branches separation');
       console.log('[ImageEncoder] Encoder output channels:', appearanceChannels);
       
       const numPixels = appearanceWidth * appearanceHeight;
@@ -331,10 +335,10 @@ export class ImageEncoder {
           }
         }
         
-        console.log('[ImageEncoder] ? Separated: 128ch (template) + 32ch (UV)');
+        console.log('[ImageEncoder] ✅ Separated: 128ch (template) + 32ch (UV)');
         
       } else if (appearanceChannels === 128) {
-        console.warn('[ImageEncoder] ?? Encoder outputs 128ch only, using subset for UV (32ch)');
+        console.warn('[ImageEncoder] ⚠️ Encoder outputs 128ch only, using subset for UV (32ch)');
         
         this.templateFeatures = new Float32Array(numPixels * 128);
         this.uvFeatures = new Float32Array(numPixels * 32);
@@ -348,7 +352,7 @@ export class ImageEncoder {
           }
         }
         
-        console.log('[ImageEncoder] ? Separated: 128ch (template) + 32ch subset (UV)');
+        console.log('[ImageEncoder] ✅ Separated: 128ch (template) + 32ch subset (UV)');
         
       } else {
         throw new Error(`Unexpected channel count: ${appearanceChannels}. Expected >= 128`);
@@ -363,14 +367,14 @@ export class ImageEncoder {
       return { projectionFeature, idEmbedding };
 
     } catch (error) {
-      console.error('[ImageEncoder] ? Feature extraction failed:', error);
+      console.error('[ImageEncoder] ❌ Feature extraction failed:', error);
       throw error;
     }
   }
 
   /**
    * 画像から特徴抽出(CameraParams直接指定版)
-   * ?? FIX: 渡されたカメラパラメータを使用 (ハードコード値を削除)
+   * ✅ FIX: 渡されたカメラパラメータを使用 (ハードコード値を削除)
    */
   async extractFeatures(
     imageUrl: string,
@@ -379,7 +383,7 @@ export class ImageEncoder {
     camera: CameraParams,
     featureDim: number = 128
   ): Promise<{ projectionFeature: Float32Array; idEmbedding: Float32Array }> {
-    // ? 渡されたカメラパラメータを使用 (論文準拠)
+    // ✅ 渡されたカメラパラメータを使用 (論文準拠)
     const cameraConfig: SourceCameraConfig = {
       position: camera.position,
       target: camera.target,
@@ -388,7 +392,7 @@ export class ImageEncoder {
       imageHeight: camera.height
     };
 
-    console.log('[ImageEncoder] ?? Using actual camera parameters:', {
+    console.log('[ImageEncoder] ✅ Using actual camera parameters:', {
       position: cameraConfig.position,
       target: cameraConfig.target,
       fov: cameraConfig.fov,
@@ -405,7 +409,7 @@ export class ImageEncoder {
   }
 
   /**
-   * 3D頂点を2Dスクリーン座標に投影
+   * 頂点をスクリーン座標に投影
    */
   private projectVertex(
     vx: number, vy: number, vz: number,
@@ -414,35 +418,35 @@ export class ImageEncoder {
     screenWidth: number,
     screenHeight: number
   ): [number, number, number, number] {
-    // View transform (column-major)
-    const viewX = viewMatrix[0] * vx + viewMatrix[4] * vy + viewMatrix[8] * vz + viewMatrix[12];
-    const viewY = viewMatrix[1] * vx + viewMatrix[5] * vy + viewMatrix[9] * vz + viewMatrix[13];
-    const viewZ = viewMatrix[2] * vx + viewMatrix[6] * vy + viewMatrix[10] * vz + viewMatrix[14];
-    const viewW = viewMatrix[3] * vx + viewMatrix[7] * vy + viewMatrix[11] * vz + viewMatrix[15];
+    // View変換
+    const vx_view = viewMatrix[0] * vx + viewMatrix[4] * vy + viewMatrix[8] * vz + viewMatrix[12];
+    const vy_view = viewMatrix[1] * vx + viewMatrix[5] * vy + viewMatrix[9] * vz + viewMatrix[13];
+    const vz_view = viewMatrix[2] * vx + viewMatrix[6] * vy + viewMatrix[10] * vz + viewMatrix[14];
+    const vw_view = viewMatrix[3] * vx + viewMatrix[7] * vy + viewMatrix[11] * vz + viewMatrix[15];
 
-    // Projection transform (column-major)
-    const clipX = projMatrix[0] * viewX + projMatrix[4] * viewY + projMatrix[8] * viewZ + projMatrix[12] * viewW;
-    const clipY = projMatrix[1] * viewX + projMatrix[5] * viewY + projMatrix[9] * viewZ + projMatrix[13] * viewW;
-    const clipZ = projMatrix[2] * viewX + projMatrix[6] * viewY + projMatrix[10] * viewZ + projMatrix[14] * viewW;
-    const clipW = projMatrix[3] * viewX + projMatrix[7] * viewY + projMatrix[11] * viewZ + projMatrix[15] * viewW;
+    // Projection変換
+    const vx_clip = projMatrix[0] * vx_view + projMatrix[4] * vy_view + projMatrix[8] * vz_view + projMatrix[12] * vw_view;
+    const vy_clip = projMatrix[1] * vx_view + projMatrix[5] * vy_view + projMatrix[9] * vz_view + projMatrix[13] * vw_view;
+    const vz_clip = projMatrix[2] * vx_view + projMatrix[6] * vy_view + projMatrix[10] * vz_view + projMatrix[14] * vw_view;
+    const vw_clip = projMatrix[3] * vx_view + projMatrix[7] * vy_view + projMatrix[11] * vz_view + projMatrix[15] * vw_view;
 
-    // Perspective division
-    const safeW = Math.abs(clipW) > 1e-6 ? clipW : 1e-6;
-    const ndcX = clipX / safeW;
-    const ndcY = clipY / safeW;
-    const depth = clipZ / safeW;
+    // NDC変換とスクリーン座標変換
+    if (Math.abs(vw_clip) < 1e-6) {
+      return [0, 0, 0, 0];
+    }
 
-    // NDC → Screen
-    const screenX = (ndcX * 0.5 + 0.5) * screenWidth;
-    const screenY = (1.0 - (ndcY * 0.5 + 0.5)) * screenHeight;
+    const x_ndc = vx_clip / vw_clip;
+    const y_ndc = vy_clip / vw_clip;
+    const z_ndc = vz_clip / vw_clip;
 
-    return [screenX, screenY, depth, clipW];
+    const screenX = (x_ndc * 0.5 + 0.5) * screenWidth;
+    const screenY = (1.0 - (y_ndc * 0.5 + 0.5)) * screenHeight;
+
+    return [screenX, screenY, z_ndc, vw_clip];
   }
 
   /**
-   * Feature mapから2D位置でバイリニアサンプリング
-   * ONNX出力はCHW形式: [1, featureDim, height, width]
-   * インデックス計算: d * H * W + y * W + x
+   * 特徴マップから線形補間でサンプリング
    */
   private sampleFeatureMapAt(
     featureMap: Float32Array,
@@ -502,6 +506,9 @@ export class ImageEncoder {
     const projectionFeatures = new Float32Array(vertexCount * featureDim);
     let visibleCount = 0;
 
+    // 🔍 デバッグ: 最初の10頂点の投影結果をログ
+    const debugCount = Math.min(10, vertexCount);
+
     for (let i = 0; i < vertexCount; i++) {
       const vx = vertices[i * 3];
       const vy = vertices[i * 3 + 1];
@@ -521,6 +528,17 @@ export class ImageEncoder {
 
       if (isVisible) visibleCount++;
 
+      // 🔍 最初の10頂点をログ
+      if (i < debugCount) {
+        console.log(`[DEBUG] Vertex ${i}:`, {
+          world: [vx.toFixed(4), vy.toFixed(4), vz.toFixed(4)],
+          screen: [screenX.toFixed(2), screenY.toFixed(2)],
+          depth: depth.toFixed(4),
+          clipW: clipW.toFixed(4),
+          isVisible
+        });
+      }
+
       this.sampleFeatureMapAt(
         featureMap,
         mapWidth,
@@ -536,7 +554,7 @@ export class ImageEncoder {
     console.log('[ImageEncoder] Visible vertices:', visibleCount, '/', vertexCount);
 
     if (visibleCount === 0) {
-      console.warn('[ImageEncoder] ?? No visible vertices! Check camera parameters.');
+      console.warn('[ImageEncoder] ⚠️ No visible vertices! Check camera parameters.');
     }
 
     return projectionFeatures;
@@ -583,9 +601,8 @@ export class ImageEncoder {
   }
 
   /**
-   * ? ソースカメラ設定からカメラパラメータを構築(配列形式対応)
-   * GUAVA論文: ソース画像撮影時のカメラパラメータを使用
-   * 修正版: WebGL column-major形式に準拠
+   * ✅ ソースカメラ設定からカメラパラメータを構築
+   * 修正版: Camera JSON の R_matrix/T_vector を優先使用
    */
   buildCameraParamsFromConfig(
     config: SourceCameraConfig, 
@@ -593,48 +610,43 @@ export class ImageEncoder {
     featureMapHeight: number
   ): CameraParams {
     const { position, target, fov } = config;
+    const R_matrix = config.debug?.R_matrix;
+    const T_vector = config.debug?.T_vector;
 
-    // ? 配列形式で方向ベクトルを計算
-    const dx = target[0] - position[0];
-    const dy = target[1] - position[1];
-    const dz = target[2] - position[2];
-    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    let viewMatrix: Float32Array;
 
-    // 前方向ベクトル (カメラが見る方向)
-    const fx = dx / len;
-    const fy = dy / len;
-    const fz = dz / len;
+    if (R_matrix && T_vector) {
+      console.log('[ImageEncoder] ✅ Using verified R_matrix/T_vector from Camera JSON');
+      console.log('[ImageEncoder] R_matrix:', R_matrix);
+      console.log('[ImageEncoder] T_vector (original):', T_vector);
+      
+      // ⚠️ T_vector の符号を反転（Camera JSON の座標系に依存）
+      // 標準的な View Matrix: [R^T | -R^T * eye]
+      // しかし T_vector が既に R @ eye の場合、符号反転が必要
+      const T_corrected = [
+        -T_vector[0],
+        -T_vector[1],
+        -T_vector[2]
+      ];
+      
+      console.log('[ImageEncoder] T_vector (corrected):', T_corrected);
+      
+      // Row-major (JSON) → Column-major (WebGL) 変換
+      viewMatrix = new Float32Array([
+        R_matrix[0][0], R_matrix[1][0], R_matrix[2][0], 0,
+        R_matrix[0][1], R_matrix[1][1], R_matrix[2][1], 0,
+        R_matrix[0][2], R_matrix[1][2], R_matrix[2][2], 0,
+        T_corrected[0],  T_corrected[1],  T_corrected[2],  1
+      ]);
 
-    // 上方向ベクトル (仮定: Y軸が上)
-    let ux = 0, uy = 1, uz = 0;
+      console.log('[ImageEncoder] View Matrix (column-major):', Array.from(viewMatrix));
+    } else {
+      // Fallback: position/target から計算
+      console.warn('[ImageEncoder] ⚠️ R_matrix not found, computing from position/target');
+      viewMatrix = this.computeLookAtMatrix(position, target);
+    }
 
-    // 右方向ベクトル = forward × up
-    let rx = fy * uz - fz * uy;
-    let ry = fz * ux - fx * uz;
-    let rz = fx * uy - fy * ux;
-    const rlen = Math.sqrt(rx * rx + ry * ry + rz * rz);
-    rx /= rlen; ry /= rlen; rz /= rlen;
-
-    // 真の上方向ベクトル = right × forward
-    ux = ry * fz - rz * fy;
-    uy = rz * fx - rx * fz;
-    uz = rx * fy - ry * fx;
-
-    // 平行移動成分を計算(配列形式対応)
-    const tx = -(rx * position[0] + ry * position[1] + rz * position[2]);
-    const ty = -(ux * position[0] + uy * position[1] + uz * position[2]);
-    const tz = (fx * position[0] + fy * position[1] + fz * position[2]);
-
-    // View Matrix (WebGL column-major形式)
-    // 列ベクトルの順: right, up, -forward, translation
-    const viewMatrix = new Float32Array([
-      rx,  ry,  rz,  0,
-      ux,  uy,  uz,  0,
-      -fx, -fy, -fz, 0,
-      tx,  ty,  tz,  1
-    ]);
-
-    // Projection Matrix (WebGL column-major形式)
+    // Projection Matrix
     const fovRad = fov * Math.PI / 180;
     const aspect = featureMapWidth / featureMapHeight;
     const f = 1 / Math.tan(fovRad / 2);
@@ -648,11 +660,13 @@ export class ImageEncoder {
       0,          0,  -1,  0
     ]);
 
-    console.log('[ImageEncoder] Built camera params from config:', {
-      position: [position[0], position[1], position[2]],
-      target: [target[0], target[1], target[2]],
+    console.log('[ImageEncoder] Camera parameters:', {
+      position: Array.from(position),
+      target: Array.from(target),
       fov,
-      featureMapSize: `${featureMapWidth}×${featureMapHeight}`
+      featureMapSize: `${featureMapWidth}×${featureMapHeight}`,
+      near,
+      far
     });
 
     return {
@@ -660,8 +674,8 @@ export class ImageEncoder {
       target,
       fov,
       aspect,
-      near: 0.01,
-      far: 100,
+      near,
+      far,
       width: featureMapWidth,
       height: featureMapHeight,
       viewMatrix,
@@ -672,7 +686,59 @@ export class ImageEncoder {
   }
 
   /**
-   * ? 論文準拠: UV branch の features を取得 (32ch)
+   * 標準的な lookAt による View Matrix 計算 (Fallback)
+   */
+  private computeLookAtMatrix(
+    position: [number, number, number],
+    target: [number, number, number]
+  ): Float32Array {
+    // Z軸: eye から target への逆方向 (カメラは -Z を見る)
+    let zx = position[0] - target[0];
+    let zy = position[1] - target[1];
+    let zz = position[2] - target[2];
+    const zlen = Math.sqrt(zx * zx + zy * zy + zz * zz);
+    zx /= zlen; 
+    zy /= zlen; 
+    zz /= zlen;
+
+    // X軸: worldUp × Z (右方向)
+    const upX = 0, upY = 1, upZ = 0;  // Y-up
+    let xx = upY * zz - upZ * zy;
+    let xy = upZ * zx - upX * zz;
+    let xz = upX * zy - upY * zx;
+    const xlen = Math.sqrt(xx * xx + xy * xy + xz * xz);
+    
+    if (xlen < 1e-6) {
+      // カメラが真上または真下を向いている場合の処理
+      console.warn('[ImageEncoder] ⚠️ Camera is looking straight up/down, using fallback X-axis');
+      xx = 1; xy = 0; xz = 0;
+    } else {
+      xx /= xlen; 
+      xy /= xlen; 
+      xz /= xlen;
+    }
+
+    // Y軸: Z × X (上方向)
+    const yx = zy * xz - zz * xy;
+    const yy = zz * xx - zx * xz;
+    const yz = zx * xy - zy * xx;
+
+    // Translation: -R^T * eye
+    const tx = -(xx * position[0] + xy * position[1] + xz * position[2]);
+    const ty = -(yx * position[0] + yy * position[1] + yz * position[2]);
+    const tz = -(zx * position[0] + zy * position[1] + zz * position[2]);
+
+    // View Matrix (OpenGL/WebGL column-major)
+    return new Float32Array([
+      xx, yx, zx, 0,
+      xy, yy, zy, 0,
+      xz, yz, zz, 0,
+      tx, ty, tz, 1
+    ]);
+  }
+
+  /**
+   * 📖 論文準拠: UV branch の features を取得 (32ch)
    */
   getUVFeatures(): Float32Array {
     if (!this.uvFeatures) {
@@ -682,7 +748,7 @@ export class ImageEncoder {
   }
 
   /**
-   * ? 論文準拠: Template branch の features を取得 (128ch)
+   * 📖 論文準拠: Template branch の features を取得 (128ch)
    */
   getTemplateFeatures(): Float32Array {
     if (!this.templateFeatures) {
