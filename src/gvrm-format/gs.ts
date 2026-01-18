@@ -150,11 +150,22 @@ export class GSViewer {
     // 初期状態として最初の4chをセット
     this.updateLatentTile(0);
 
+    // boneMatricesを初期化（ボーン0を単位行列に設定）
+    const boneMatricesData = new Float32Array(16 * 64);
+    // 単位行列: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1] を全ボーンに設定
+    for (let bone = 0; bone < 64; bone++) {
+      const offset = bone * 16;
+      boneMatricesData[offset + 0] = 1;  // m[0][0]
+      boneMatricesData[offset + 5] = 1;  // m[1][1]
+      boneMatricesData[offset + 10] = 1; // m[2][2]
+      boneMatricesData[offset + 15] = 1; // m[3][3]
+    }
+
     const material = new THREE.ShaderMaterial({
       vertexShader,
       fragmentShader,
       uniforms: {
-        boneMatrices: { value: new Float32Array(16 * 64) },
+        boneMatrices: { value: boneMatricesData },
         basePointSize: { value: 15.0 }
       },
       depthTest: true,

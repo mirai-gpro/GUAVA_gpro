@@ -407,14 +407,23 @@ export class GVRM {
     const plyVertexCount = this.plyData.vertices.length / 3;
 
     // GSViewerが期待するGaussianDataオブジェクトを構築
+    // スキニングなしの場合: boneIndices[0]=0, boneWeights[0]=1.0 で単位行列を使用
+    const boneIndices = new Float32Array(plyVertexCount * 4);  // 全てゼロ（ボーン0を参照）
+    const boneWeights = new Float32Array(plyVertexCount * 4);
+
+    // 各頂点の最初のウェイトを1.0に設定（スキニングで単位行列を適用）
+    for (let i = 0; i < plyVertexCount; i++) {
+      boneWeights[i * 4] = 1.0;  // 最初のウェイトのみ1.0
+    }
+
     const gaussianData = {
       positions: this.plyData.vertices,
       latents: this.templateGaussians.latents,
       opacity: this.templateGaussians.opacities,
       scale: this.templateGaussians.scales,
       rotation: this.templateGaussians.rotations,
-      boneIndices: new Float32Array(plyVertexCount * 4),  // ダミー（スキニングなし）
-      boneWeights: new Float32Array(plyVertexCount * 4),  // ダミー（スキニングなし）
+      boneIndices: boneIndices,
+      boneWeights: boneWeights,
       vertexCount: plyVertexCount
     };
 
