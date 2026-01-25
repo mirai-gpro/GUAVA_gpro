@@ -188,6 +188,14 @@ export class TemplateDecoderWebGPU {
     };
     
     console.log(`[TemplateDecoderWebGPU]   ✅ Weights parsed (${offset} floats used)`);
+
+    // Debug: verify weight statistics
+    const w0Stats = this.analyzeWeights(this.weights.global_fc0_weight);
+    const f0Stats = this.analyzeWeights(this.weights.feature_0_weight);
+    const c0Stats = this.analyzeWeights(this.weights.color_0_weight);
+    console.log(`[TemplateDecoderWebGPU]   📊 global_fc0 weight: min=${w0Stats.min.toFixed(4)}, max=${w0Stats.max.toFixed(4)}, mean=${w0Stats.mean.toFixed(4)}`);
+    console.log(`[TemplateDecoderWebGPU]   📊 feature_0 weight: min=${f0Stats.min.toFixed(4)}, max=${f0Stats.max.toFixed(4)}, mean=${f0Stats.mean.toFixed(4)}`);
+    console.log(`[TemplateDecoderWebGPU]   📊 color_0 weight: min=${c0Stats.min.toFixed(4)}, max=${c0Stats.max.toFixed(4)}, mean=${c0Stats.mean.toFixed(4)}`);
   }
 
   /**
@@ -241,19 +249,27 @@ export class TemplateDecoderWebGPU {
       weights.global_fc4_weight, weights.global_fc4_bias,
       256, 256
     );
-    
+
+    // Debug: global mapping output
+    const globalStats = this.analyzeArray(id_embedding);
     console.log(`[TemplateDecoderWebGPU]   Global mapping: 768 → 256 ✅`);
+    console.log(`[TemplateDecoderWebGPU]   📊 id_embedding stats: min=${globalStats.min.toFixed(4)}, max=${globalStats.max.toFixed(4)}, unique=${globalStats.unique}`);
 
     // ================================================================
     // Step 2: Get base features for N vertices
     // ================================================================
     const base_features = weights.base_features.slice(0, N * 128);
+    const baseStats = this.analyzeArray(base_features);
     console.log(`[TemplateDecoderWebGPU]   Base features: ${N} x 128 ✅`);
+    console.log(`[TemplateDecoderWebGPU]   📊 base_features stats: min=${baseStats.min.toFixed(4)}, max=${baseStats.max.toFixed(4)}, unique=${baseStats.unique}`);
 
     // ================================================================
     // Step 3: Concatenate features for each vertex
     // fused = [projection[128], base[128], global[256]] = [512]
     // ================================================================
+    const projStats = this.analyzeArray(input.projection_features);
+    console.log(`[TemplateDecoderWebGPU]   📊 projection_features stats: min=${projStats.min.toFixed(4)}, max=${projStats.max.toFixed(4)}, unique=${projStats.unique}`);
+
     const fused = new Float32Array(N * 512);
     for (let i = 0; i < N; i++) {
       const offset = i * 512;
@@ -270,7 +286,10 @@ export class TemplateDecoderWebGPU {
         fused[offset + 256 + j] = id_embedding[j];
       }
     }
+    const fusedStats = this.analyzeArray(fused);
     console.log(`[TemplateDecoderWebGPU]   Fused features: ${N} x 512 ✅`);
+    console.log(`[TemplateDecoderWebGPU]   📊 fused stats: min=${fusedStats.min.toFixed(4)}, max=${fusedStats.max.toFixed(4)}, unique=${fusedStats.unique}`);
+    console.log(`[TemplateDecoderWebGPU]   📊 fused[0..7] (vertex 0): [${Array.from(fused.slice(0, 8)).map(v => v.toFixed(3)).join(', ')}]`);
 
     // ================================================================
     // Step 4: Feature layers (512→256→256→256→256)
@@ -279,10 +298,16 @@ export class TemplateDecoderWebGPU {
     //   - 最後の層: Linear のみ (ReLU無し)
     // ================================================================
     let features = this.batchLinearRelu(fused, weights.feature_0_weight, weights.feature_0_bias, N, 512, 256);
+    let fl0Stats = this.analyzeArray(features);
+    console.log(`[TemplateDecoderWebGPU]   📊 after feature_layer_0: min=${fl0Stats.min.toFixed(4)}, max=${fl0Stats.max.toFixed(4)}`);
+
     features = this.batchLinearRelu(features, weights.feature_2_weight, weights.feature_2_bias, N, 256, 256);
     features = this.batchLinearRelu(features, weights.feature_4_weight, weights.feature_4_bias, N, 256, 256);
     features = this.batchLinear(features, weights.feature_6_weight, weights.feature_6_bias, N, 256, 256);  // NO ReLU
+
+    const featStats = this.analyzeArray(features);
     console.log(`[TemplateDecoderWebGPU]   Feature layers: ${N} x 256 ✅`);
+    console.log(`[TemplateDecoderWebGPU]   📊 final features stats: min=${featStats.min.toFixed(4)}, max=${featStats.max.toFixed(4)}, unique=${featStats.unique}`);
 
     // ================================================================
     // Step 5: Concatenate with view_dirs (256 + 27 = 283)
@@ -458,6 +483,19 @@ export class TemplateDecoderWebGPU {
     const sampleSize = Math.min(1000, arr.length);
     const uniqueCount = new Set(Array.from(arr.slice(0, sampleSize))).size;
     return { min, max, unique: uniqueCount };
+  }
+
+  /**
+   * Analyze weight statistics (includes mean)
+   */
+  private analyzeWeights(arr: Float32Array): { min: number; max: number; mean: number } {
+    let min = Infinity, max = -Infinity, sum = 0;
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i] < min) min = arr[i];
+      if (arr[i] > max) max = arr[i];
+      sum += arr[i];
+    }
+    return { min, max, mean: sum / arr.length };
   }
 
   /**
