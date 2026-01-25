@@ -312,16 +312,15 @@ export class TemplateDecoderWebGPU {
       opacities[i] = 1 / (1 + Math.exp(-opacities_raw[i])); // sigmoid
     }
     
-    // Scale: 283→128→3 + clamp + exp
-    // Clamp log-space scale to prevent exp() overflow → Infinity → NaN
-    const SCALE_CLAMP_MIN = -10.0;  // exp(-10) ≈ 0.00005
-    const SCALE_CLAMP_MAX = 5.0;    // exp(5) ≈ 148
+    // Scale: 283→128→3 + sigmoid * 0.05
+    // Python版 Vertex_GS_Decoder準拠: scales = torch.sigmoid(scales) * 0.05
+    // 出力範囲: [0, 0.05]
     let scale_hidden = this.batchLinearRelu(features_with_view, weights.scale_0_weight, weights.scale_0_bias, N, 283, 128);
     const scales_raw = this.batchLinear(scale_hidden, weights.scale_2_weight, weights.scale_2_bias, N, 128, 3);
     const scales = new Float32Array(N * 3);
     for (let i = 0; i < N * 3; i++) {
-      const clamped = Math.max(SCALE_CLAMP_MIN, Math.min(SCALE_CLAMP_MAX, scales_raw[i]));
-      scales[i] = Math.exp(clamped);
+      const sigmoid = 1 / (1 + Math.exp(-scales_raw[i]));
+      scales[i] = sigmoid * 0.05;
     }
     
     // Rotation: 283→128→4 + normalize

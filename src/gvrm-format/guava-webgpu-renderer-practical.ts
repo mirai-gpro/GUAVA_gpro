@@ -1,6 +1,7 @@
 // guava-webgpu-renderer-practical.ts
-// v66: TemplateDecoderWebGPU対応版
-// - opacity/scale: シェーダーでは変換なし（TypeScriptで適用済み）
+// v67: Python版 Vertex_GS_Decoder準拠
+// - scale: sigmoid * 0.05 (範囲 [0, 0.05]) - Python版と一致
+// - opacity: sigmoid (範囲 [0, 1])
 // - ブレンディング: src*1 + dst*(1-src.a) (premultiplied alpha)
 
 import { CameraUtils } from './camera-utils';
@@ -269,9 +270,10 @@ export class GuavaWebGPURendererPractical {
                     let dist = abs(viewPos.z);
                     let focal = 24.0; 
                     
-                    // Scale: TypeScriptで既にexp適用済み
-                    let sX = max(inst.scale.x, 0.001) * focal / max(dist, 0.1);
-                    let sY = max(inst.scale.y, 0.001) * focal / max(dist, 0.1);
+                    // Scale: TypeScriptで sigmoid * 0.05 適用済み (範囲 [0, 0.05])
+                    // Python版 Vertex_GS_Decoder準拠
+                    let sX = max(inst.scale.x, 0.0001) * focal / max(dist, 0.1);
+                    let sY = max(inst.scale.y, 0.0001) * focal / max(dist, 0.1);
                     
                     let clampedSX = clamp(sX, 0.0001, 2.0);
                     let clampedSY = clamp(sY, 0.0001, 2.0);
