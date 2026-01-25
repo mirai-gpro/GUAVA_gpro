@@ -537,8 +537,29 @@ export class GVRM {
       if (this.frameCount === 1) {
         mrtStats.push(`MRT${i}: [${mrtMin.toFixed(2)}, ${mrtMax.toFixed(2)}] NaN=${mrtNaN} Inf=${mrtInf}`);
       }
-      
+
       this.readbackBuffers[i].unmap();
+    }
+
+    // ================================================================
+    // 応急処置: アルファチャンネルに上書きされた欠落チャンネルを補間
+    // MRTの4番目のチャンネル(A)はblending用alphaなので、
+    // 実際のlatentチャンネル3,7,11,15,19,23,27,31が欠落している
+    // 隣接チャンネルからコピーして補間
+    // ================================================================
+    const pixelCount = width * height;
+    const missingChannels = [3, 7, 11, 15, 19, 23, 27, 31];
+    for (const ch of missingChannels) {
+      const srcCh = ch - 1;  // 隣接チャンネルからコピー
+      const srcOffset = srcCh * pixelCount;
+      const dstOffset = ch * pixelCount;
+      for (let p = 0; p < pixelCount; p++) {
+        this.coarseFeatureArray[dstOffset + p] = this.coarseFeatureArray[srcOffset + p];
+      }
+    }
+
+    if (this.frameCount === 1) {
+      console.log('[GVRM] ⚠️ Missing channel fix applied: ch 3,7,11,15,19,23,27,31 interpolated from adjacent');
     }
     
     if (this.frameCount === 1) {
