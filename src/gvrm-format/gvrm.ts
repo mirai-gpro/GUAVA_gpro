@@ -13,6 +13,7 @@ import { UVDecoder } from './uv-decoder';
 import { RFDNRefiner } from './rfdn-refiner-webgpu';  // ← 新しい軽量Refiner
 import { WebGLDisplay } from './webgl-display';
 import { GuavaWebGPURendererPractical } from './guava-webgpu-renderer-practical';
+import { GuavaWebGPURendererCompute } from './guava-webgpu-renderer-compute';
 import { CameraUtils } from './camera-utils';
 
 interface GVRMConfig {
@@ -83,6 +84,8 @@ export class GVRM {
   // WebGPU
   private gpuDevice: GPUDevice | null = null;
   private gsCoarseRenderer: GuavaWebGPURendererPractical | null = null;
+  private gsComputeRenderer: GuavaWebGPURendererCompute | null = null;
+  private useComputeRenderer: boolean = true;  // ← 32チャンネル完全保持のためCompute Rendererを使用
   private readbackBuffers: GPUBuffer[] = [];
   private coarseFeatureArray: Float32Array | null = null;
   
@@ -395,19 +398,32 @@ export class GVRM {
     
     const viewMatrix = CameraUtils.getCanonicalViewMatrix();
     const projMatrix = CameraUtils.getProjMatrix(1.0);
-    
-    this.gsCoarseRenderer = new GuavaWebGPURendererPractical(
-      this.gpuDevice,
-      finalGaussians,
-      {
-        viewMatrix: viewMatrix,
-        projMatrix: projMatrix,
-        imageWidth: 512,
-        imageHeight: 512
-      }
-    );
-    
-    console.log('[GVRM] Renderer configured with canonical camera');
+
+    const cameraConfig = {
+      viewMatrix: viewMatrix,
+      projMatrix: projMatrix,
+      imageWidth: 512,
+      imageHeight: 512
+    };
+
+    if (this.useComputeRenderer) {
+      // Compute Renderer: 32チャンネル完全保持 (フラグメントシェーダーのアルファブレンディングによるチャンネル欠落を回避)
+      this.gsComputeRenderer = new GuavaWebGPURendererCompute(
+        this.gpuDevice,
+        finalGaussians,
+        cameraConfig
+      );
+      await this.gsComputeRenderer.waitForInit();
+      console.log('[GVRM] ✅ Compute Renderer configured (32 channels preserved)');
+    } else {
+      // Practical Renderer: 従来のフラグメントシェーダー方式 (8チャンネル欠落)
+      this.gsCoarseRenderer = new GuavaWebGPURendererPractical(
+        this.gpuDevice,
+        finalGaussians,
+        cameraConfig
+      );
+      console.log('[GVRM] Practical Renderer configured (warning: 8 channels lost to alpha blending)');
+    }
   }
   
   /**
@@ -430,20 +446,42 @@ export class GVRM {
     
     try {
       this.frameCount++;
-      
-      this.gsCoarseRenderer!.sort();
-      this.gsCoarseRenderer!.render();
-      
-      const outputTextures = this.gsCoarseRenderer!.getOutputTextures();
-      const coarseFeatures = await this.convertTexturesToFloat32Array(outputTextures);
-      
+
+      let coarseFeatures: Float32Array;
+
+      if (this.useComputeRenderer && this.gsComputeRenderer) {
+        // Compute Renderer: 32チャンネル完全保持
+        this.gsComputeRenderer.sort();
+        this.gsComputeRenderer.render();
+
+        const outputBuffers = this.gsComputeRenderer.getOutputBuffers();
+        coarseFeatures = await this.convertBuffersToFloat32Array(outputBuffers);
+
+        if (this.frameCount === 1) {
+          console.log('[GVRM] 🚀 Using Compute Renderer (all 32 channels preserved)');
+        }
+      } else if (this.gsCoarseRenderer) {
+        // Practical Renderer: 従来方式 (8チャンネル欠落あり)
+        this.gsCoarseRenderer.sort();
+        this.gsCoarseRenderer.render();
+
+        const outputTextures = this.gsCoarseRenderer.getOutputTextures();
+        coarseFeatures = await this.convertTexturesToFloat32Array(outputTextures);
+
+        if (this.frameCount === 1) {
+          console.log('[GVRM] ⚠️ Using Practical Renderer (8 channels interpolated)');
+        }
+      } else {
+        throw new Error('No renderer available');
+      }
+
       // RFDN Refiner: idEmbedding不要！32ch特徴マップのみ
       const refinedRGB = await this.neuralRefiner.process(coarseFeatures);
-      
+
       if (this.webglDisplay) {
         this.webglDisplay.display(refinedRGB, this.frameCount);
       }
-      
+
       if (this.frameCount === 1) {
         const coarseStats = this.analyzeArray(coarseFeatures.slice(0, 10000));
         const refinedStats = this.analyzeArray(refinedRGB.slice(0, 10000));
@@ -452,7 +490,7 @@ export class GVRM {
         console.log(`  Refined RGB: min=${refinedStats.min.toFixed(4)}, max=${refinedStats.max.toFixed(4)}`);
         console.log(`  🚀 RFDN Refiner: No idEmbedding used (178KB model)`);
       }
-      
+
     } catch (error) {
       console.error('[GVRM] Render error:', error);
       this.isRunning = false;
@@ -570,6 +608,82 @@ export class GVRM {
     return this.coarseFeatureArray;
   }
   
+  /**
+   * Compute Renderer用: ストレージバッファから32チャンネルを読み出し
+   * Practical Rendererと異なり、全32チャンネルが正しく保持されている
+   */
+  private async convertBuffersToFloat32Array(buffers: GPUBuffer[]): Promise<Float32Array> {
+    if (!this.gpuDevice) {
+      throw new Error('GPU device not initialized');
+    }
+
+    const width = 512, height = 512;
+    const pixelCount = width * height;
+
+    // 出力配列を初期化
+    if (!this.coarseFeatureArray || this.coarseFeatureArray.length !== pixelCount * 32) {
+      this.coarseFeatureArray = new Float32Array(pixelCount * 32);
+    }
+
+    // 読み出し用バッファを作成
+    const readbackSize = pixelCount * 4 * 4;  // 4 floats x 4 bytes
+    const readbackBuffers: GPUBuffer[] = [];
+
+    const commandEncoder = this.gpuDevice.createCommandEncoder();
+    for (let i = 0; i < 8; i++) {
+      const readback = this.gpuDevice.createBuffer({
+        size: readbackSize,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+      });
+      commandEncoder.copyBufferToBuffer(buffers[i], 0, readback, 0, readbackSize);
+      readbackBuffers.push(readback);
+    }
+    this.gpuDevice.queue.submit([commandEncoder.finish()]);
+
+    // 非同期で読み出し
+    await Promise.all(readbackBuffers.map(buf => buf.mapAsync(GPUMapMode.READ)));
+
+    // Debug: 統計情報
+    const bufStats: string[] = [];
+
+    for (let i = 0; i < 8; i++) {
+      const mappedRange = readbackBuffers[i].getMappedRange();
+      const source = new Float32Array(mappedRange);
+
+      let bufMin = Infinity, bufMax = -Infinity, bufNaN = 0;
+
+      for (let p = 0; p < pixelCount; p++) {
+        for (let c = 0; c < 4; c++) {
+          const srcIdx = p * 4 + c;
+          const channel = i * 4 + c;
+          const dstIdx = channel * pixelCount + p;
+          const val = source[srcIdx];
+          this.coarseFeatureArray[dstIdx] = val;
+
+          if (isNaN(val)) bufNaN++;
+          else {
+            if (val < bufMin) bufMin = val;
+            if (val > bufMax) bufMax = val;
+          }
+        }
+      }
+
+      if (this.frameCount === 1) {
+        bufStats.push(`Buf${i}: [${bufMin.toFixed(2)}, ${bufMax.toFixed(2)}] NaN=${bufNaN}`);
+      }
+
+      readbackBuffers[i].unmap();
+      readbackBuffers[i].destroy();
+    }
+
+    if (this.frameCount === 1) {
+      console.log('[GVRM] Compute Renderer buffer stats (32 channels, no loss):');
+      bufStats.forEach(s => console.log('  ' + s));
+    }
+
+    return this.coarseFeatureArray;
+  }
+
   private float16ToFloat32(f16: number): number {
     const sign = (f16 & 0x8000) >> 15;
     const exponent = (f16 & 0x7C00) >> 10;
