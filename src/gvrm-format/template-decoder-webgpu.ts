@@ -224,13 +224,14 @@ export class TemplateDecoderWebGPU {
 
     // ================================================================
     // Step 1: Global Feature Mapping (768 → 256)
+    // Python版 ubody_gaussian.py 準拠: LeakyReLU使用
     // ================================================================
-    const global_256 = this.linearRelu(
+    const global_256 = this.linearLeakyRelu(
       input.global_embedding,
       weights.global_fc0_weight, weights.global_fc0_bias,
       768, 256
     );
-    const global_256_2 = this.linearRelu(
+    const global_256_2 = this.linearLeakyRelu(
       global_256,
       weights.global_fc2_weight, weights.global_fc2_bias,
       256, 256
@@ -273,11 +274,14 @@ export class TemplateDecoderWebGPU {
 
     // ================================================================
     // Step 4: Feature layers (512→256→256→256→256)
+    // Python版 feature_decoder.py Vertex_GS_Decoder 準拠:
+    //   - 最初の3層: Linear + ReLU
+    //   - 最後の層: Linear のみ (ReLU無し)
     // ================================================================
     let features = this.batchLinearRelu(fused, weights.feature_0_weight, weights.feature_0_bias, N, 512, 256);
     features = this.batchLinearRelu(features, weights.feature_2_weight, weights.feature_2_bias, N, 256, 256);
     features = this.batchLinearRelu(features, weights.feature_4_weight, weights.feature_4_bias, N, 256, 256);
-    features = this.batchLinearRelu(features, weights.feature_6_weight, weights.feature_6_bias, N, 256, 256);
+    features = this.batchLinear(features, weights.feature_6_weight, weights.feature_6_bias, N, 256, 256);  // NO ReLU
     console.log(`[TemplateDecoderWebGPU]   Feature layers: ${N} x 256 ✅`);
 
     // ================================================================
@@ -396,6 +400,18 @@ export class TemplateDecoderWebGPU {
     const output = this.linear(input, weight, bias, inDim, outDim);
     for (let i = 0; i < output.length; i++) {
       output[i] = Math.max(0, output[i]);
+    }
+    return output;
+  }
+
+  /**
+   * Linear + LeakyReLU (negative_slope=0.01, PyTorch default)
+   * Python版 ubody_gaussian.py の global_feature_mapping 準拠
+   */
+  private linearLeakyRelu(input: Float32Array, weight: Float32Array, bias: Float32Array, inDim: number, outDim: number): Float32Array {
+    const output = this.linear(input, weight, bias, inDim, outDim);
+    for (let i = 0; i < output.length; i++) {
+      output[i] = output[i] > 0 ? output[i] : 0.01 * output[i];
     }
     return output;
   }
