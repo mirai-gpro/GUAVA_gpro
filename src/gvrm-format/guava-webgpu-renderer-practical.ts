@@ -171,9 +171,10 @@ export class GuavaWebGPURendererPractical {
         }
         
         // Sort back to front for proper alpha blending
+        // 奥(大きいdepth)から手前(小さいdepth)の順序でレンダリング
         const depthRef = this.depthArray;
         const indices = Array.from(this.indexArray);
-        indices.sort((a, b) => depthRef[a] - depthRef[b]);
+        indices.sort((a, b) => depthRef[b] - depthRef[a]);  // 降順 = back to front
         
         const data = this.gaussianData;
         const fpi = this.floatsPerInstance;
