@@ -86,6 +86,7 @@ export class GVRM {
   private gsCoarseRenderer: GuavaWebGPURendererPractical | null = null;
   private gsComputeRenderer: GuavaWebGPURendererCompute | null = null;
   private useComputeRenderer: boolean = true;  // ← 32チャンネル完全保持のためCompute Rendererを使用
+  private debugBypassRFDN: boolean = true;  // ← DEBUG: RFDNをバイパスして最初3chをRGBとして表示
   private readbackBuffers: GPUBuffer[] = [];
   private coarseFeatureArray: Float32Array | null = null;
   
@@ -475,20 +476,61 @@ export class GVRM {
         throw new Error('No renderer available');
       }
 
-      // RFDN Refiner: idEmbedding不要！32ch特徴マップのみ
-      const refinedRGB = await this.neuralRefiner.process(coarseFeatures);
+      let displayRGB: Float32Array;
+
+      if (this.debugBypassRFDN) {
+        // DEBUG: RFDNをバイパスして最初3チャンネルをRGBとして直接表示
+        // これにより、Gaussian splatting自体が正しく動作しているかを確認
+        const width = 512, height = 512;
+        displayRGB = new Float32Array(width * height * 3);
+
+        // 最初3チャンネルの統計を取得（正規化用）
+        const pixelCount = width * height;
+        let minVal = Infinity, maxVal = -Infinity;
+        for (let ch = 0; ch < 3; ch++) {
+          for (let p = 0; p < pixelCount; p++) {
+            const val = coarseFeatures[ch * pixelCount + p];
+            if (val < minVal) minVal = val;
+            if (val > maxVal) maxVal = val;
+          }
+        }
+        const range = maxVal - minVal || 1;
+
+        // CHW → HWC変換 + 正規化 [0, 1]
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const p = y * width + x;
+            for (let c = 0; c < 3; c++) {
+              const srcIdx = c * pixelCount + p;
+              const dstIdx = p * 3 + c;
+              // 正規化: [minVal, maxVal] → [0, 1]
+              displayRGB[dstIdx] = (coarseFeatures[srcIdx] - minVal) / range;
+            }
+          }
+        }
+
+        if (this.frameCount === 1) {
+          console.log('[GVRM] 🔧 DEBUG: Bypassing RFDN, showing first 3 channels as RGB');
+          console.log(`[GVRM]   Normalization: [${minVal.toFixed(4)}, ${maxVal.toFixed(4)}] → [0, 1]`);
+        }
+      } else {
+        // RFDN Refiner: idEmbedding不要！32ch特徴マップのみ
+        displayRGB = await this.neuralRefiner.process(coarseFeatures);
+      }
 
       if (this.webglDisplay) {
-        this.webglDisplay.display(refinedRGB, this.frameCount);
+        this.webglDisplay.display(displayRGB, this.frameCount);
       }
 
       if (this.frameCount === 1) {
         const coarseStats = this.analyzeArray(coarseFeatures.slice(0, 10000));
-        const refinedStats = this.analyzeArray(refinedRGB.slice(0, 10000));
+        const displayStats = this.analyzeArray(displayRGB.slice(0, 10000));
         console.log('[GVRM] First frame stats:');
         console.log(`  Coarse features (32ch): min=${coarseStats.min.toFixed(4)}, max=${coarseStats.max.toFixed(4)}`);
-        console.log(`  Refined RGB: min=${refinedStats.min.toFixed(4)}, max=${refinedStats.max.toFixed(4)}`);
-        console.log(`  🚀 RFDN Refiner: No idEmbedding used (178KB model)`);
+        console.log(`  Display RGB: min=${displayStats.min.toFixed(4)}, max=${displayStats.max.toFixed(4)}`);
+        if (!this.debugBypassRFDN) {
+          console.log(`  🚀 RFDN Refiner: No idEmbedding used (178KB model)`);
+        }
       }
 
     } catch (error) {
