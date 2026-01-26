@@ -420,11 +420,19 @@ export class GVRM {
     }
     
     // ===== PHASE 3: UV Pipeline (Optional) =====
-    if (this.uvMappingData) {
+    if (this.uvTriangleMapping) {
       console.log('[GVRM] Phase 3: UV pipeline');
-      console.log('[GVRM]   ⚠️ UV pipeline currently disabled (requires EHM mesh data)');
+      console.log(`[GVRM]   ✅ UV Triangle Mapping loaded: ${this.uvTriangleMapping.numValid.toLocaleString()} valid pixels`);
+      console.log(`[GVRM]   Resolution: ${this.uvTriangleMapping.width}x${this.uvTriangleMapping.height}`);
+
+      // TODO: UV Pipeline Implementation
+      // 1. Map appearance features to UV space (requires inverse texture mapping)
+      // 2. Run UV Point Decoder (uv_point_decoder.onnx)
+      // 3. Transform UV Gaussians to world space using barycentric coords
+      console.log('[GVRM]   ⚠️ UV Gaussian generation not yet implemented');
+      console.log('[GVRM]   (Currently using Template Gaussians only)');
     } else {
-      console.log('[GVRM] Phase 3: UV pipeline skipped (no UV mapping data)');
+      console.log('[GVRM] Phase 3: UV pipeline skipped (no UV Triangle Mapping)');
     }
     
     console.log('[GVRM] ─────────────────────────────');
