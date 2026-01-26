@@ -197,6 +197,63 @@ export class TemplateDecoderWebGPU {
     console.log(`[TemplateDecoderWebGPU]   📊 global_fc0 weight: min=${w0Stats.min.toFixed(4)}, max=${w0Stats.max.toFixed(4)}, mean=${w0Stats.mean.toFixed(4)}`);
     console.log(`[TemplateDecoderWebGPU]   📊 feature_0 weight: min=${f0Stats.min.toFixed(4)}, max=${f0Stats.max.toFixed(4)}, mean=${f0Stats.mean.toFixed(4)}`);
     console.log(`[TemplateDecoderWebGPU]   📊 color_0 weight: min=${c0Stats.min.toFixed(4)}, max=${c0Stats.max.toFixed(4)}, mean=${c0Stats.mean.toFixed(4)}`);
+
+    // ======== 🔍🔍🔍 COLOR HEAD WEIGHT ANALYSIS ========
+    // Check if R, G, B output weights are similar (would cause R≈G≈B output)
+    console.log(`[TemplateDecoderWebGPU] 🔍🔍🔍 COLOR HEAD WEIGHT ANALYSIS:`);
+
+    // color_2_weight is [32, 128] - first 3 rows are R, G, B
+    const c2 = this.weights.color_2_weight;
+    const inDim = 128;  // input dimension to color_2
+
+    // Extract R, G, B weight rows
+    const wR = c2.slice(0 * inDim, 1 * inDim);  // Row 0 = R
+    const wG = c2.slice(1 * inDim, 2 * inDim);  // Row 1 = G
+    const wB = c2.slice(2 * inDim, 3 * inDim);  // Row 2 = B
+
+    // Compute statistics for each row
+    const rStats = this.analyzeWeights(wR);
+    const gStats = this.analyzeWeights(wG);
+    const bStats = this.analyzeWeights(wB);
+
+    console.log(`[TemplateDecoderWebGPU]   color_2 R weights: min=${rStats.min.toFixed(4)}, max=${rStats.max.toFixed(4)}, mean=${rStats.mean.toFixed(4)}`);
+    console.log(`[TemplateDecoderWebGPU]   color_2 G weights: min=${gStats.min.toFixed(4)}, max=${gStats.max.toFixed(4)}, mean=${gStats.mean.toFixed(4)}`);
+    console.log(`[TemplateDecoderWebGPU]   color_2 B weights: min=${bStats.min.toFixed(4)}, max=${bStats.max.toFixed(4)}, mean=${bStats.mean.toFixed(4)}`);
+
+    // Compute correlation/similarity between R, G, B weights
+    // If R≈G≈B weights, the outputs will also be R≈G≈B
+    let dotRG = 0, dotGB = 0, dotRB = 0;
+    let normR = 0, normG = 0, normB = 0;
+    for (let i = 0; i < inDim; i++) {
+      dotRG += wR[i] * wG[i];
+      dotGB += wG[i] * wB[i];
+      dotRB += wR[i] * wB[i];
+      normR += wR[i] * wR[i];
+      normG += wG[i] * wG[i];
+      normB += wB[i] * wB[i];
+    }
+    normR = Math.sqrt(normR);
+    normG = Math.sqrt(normG);
+    normB = Math.sqrt(normB);
+
+    const cosRG = dotRG / (normR * normG + 1e-8);
+    const cosGB = dotGB / (normG * normB + 1e-8);
+    const cosRB = dotRB / (normR * normB + 1e-8);
+
+    console.log(`[TemplateDecoderWebGPU]   Weight cosine similarity:`);
+    console.log(`[TemplateDecoderWebGPU]     R·G = ${cosRG.toFixed(4)}`);
+    console.log(`[TemplateDecoderWebGPU]     G·B = ${cosGB.toFixed(4)}`);
+    console.log(`[TemplateDecoderWebGPU]     R·B = ${cosRB.toFixed(4)}`);
+
+    if (cosRG > 0.9 && cosGB > 0.9 && cosRB > 0.9) {
+      console.log(`[TemplateDecoderWebGPU]   ⚠️⚠️⚠️ WARNING: R, G, B weights are highly similar!`);
+      console.log(`[TemplateDecoderWebGPU]   This will cause R≈G≈B output regardless of input!`);
+    }
+
+    // Also check color_2_bias for R, G, B
+    const c2bias = this.weights.color_2_bias;
+    console.log(`[TemplateDecoderWebGPU]   color_2 bias: R=${c2bias[0].toFixed(4)}, G=${c2bias[1].toFixed(4)}, B=${c2bias[2].toFixed(4)}`);
+    // ======== END COLOR HEAD WEIGHT ANALYSIS ========
   }
 
   /**
