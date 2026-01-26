@@ -17,6 +17,7 @@ import { GuavaWebGPURendererPractical } from './guava-webgpu-renderer-practical'
 import { GuavaWebGPURendererCompute } from './guava-webgpu-renderer-compute';
 import { CameraUtils } from './camera-utils';
 import { loadUVTriangleMapping, type UVTriangleMapping } from './webgl-uv-rasterizer';
+import { UVFeatureMapper } from './uv-feature-mapper';
 
 interface GVRMConfig {
   templatePath?: string;
@@ -71,6 +72,9 @@ export class GVRM {
 
   // UV Pipeline data
   private uvTriangleMapping: UVTriangleMapping | null = null;
+  private uvFeatureMapper: UVFeatureMapper | null = null;
+  private appearanceMap: Float32Array | null = null;  // [128, 518, 518] from Image Encoder
+  private appearanceMapSize: number = 518;
   
   // Core modules
   private imageEncoder: ImageEncoder;
@@ -125,9 +129,9 @@ export class GVRM {
       useWebGPU: false  // WASM使用（安定性優先）
     });
     
-    console.log('[GVRM] Created (v82: UV Pipeline Support 2026-01-26)');
+    console.log('[GVRM] Created (v83: Full UV Pipeline Implementation 2026-01-26)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
-    console.log('[GVRM] 🔧 BUILD v82 - Added UV Triangle Mapping loader for UV pipeline');
+    console.log('[GVRM] 🔧 BUILD v83 - Full UV Pipeline: appearance→UV→decoder→Gaussians');
     console.log('[GVRM] ════════════════════════════════════════════════════');
   }
   
@@ -197,9 +201,19 @@ export class GVRM {
       try {
         this.uvTriangleMapping = await loadUVTriangleMapping(this.uvTriangleMappingPath);
         console.log(`[GVRM]   ✅ UV Triangle Mapping loaded: ${this.uvTriangleMapping.numValid.toLocaleString()} valid pixels`);
+
+        // Initialize UV Feature Mapper
+        this.uvFeatureMapper = new UVFeatureMapper({
+          uvWidth: this.uvTriangleMapping.width,
+          uvHeight: this.uvTriangleMapping.height,
+          imageWidth: 518,
+          imageHeight: 518
+        });
+        console.log('[GVRM]   ✅ UV Feature Mapper initialized');
       } catch (e) {
         console.warn('[GVRM]   ⚠️ UV Triangle Mapping not found (template-only mode)');
         this.uvTriangleMapping = null;
+        this.uvFeatureMapper = null;
       }
       
       // 4. Initialize modules
@@ -272,7 +286,7 @@ export class GVRM {
     console.log(`[GVRM]   Input image: ${this.imagePath}`);
     console.log(`[GVRM]   Vertices: ${vertexCount}`);
     
-    const { projectionFeature, idEmbedding, visibilityMask } =
+    const { projectionFeature, idEmbedding, visibilityMask, appearanceMap, appearanceMapSize } =
       await this.imageEncoder.extractFeaturesWithSourceCamera(
         this.imagePath,
         {},
@@ -283,6 +297,9 @@ export class GVRM {
 
     // Store visibility mask for opacity masking
     this.visibilityMask = visibilityMask;
+    // Store appearance map for UV pipeline
+    this.appearanceMap = appearanceMap;
+    this.appearanceMapSize = appearanceMapSize;
     
     console.log('[GVRM]   ✅ Encoder output:');
     console.log(`[GVRM]      Projection features: [${vertexCount}, 128]`);
@@ -291,6 +308,9 @@ export class GVRM {
     console.log(`[GVRM]      ID embedding (CLS token): [${idEmbedding.length}]`);
     const idStats = this.analyzeArray(idEmbedding);
     console.log(`[GVRM]        stats: min=${idStats.min.toFixed(4)}, max=${idStats.max.toFixed(4)}, nonZeros=${idStats.nonZeros}`);
+    console.log(`[GVRM]      Appearance map: [128, ${appearanceMapSize}, ${appearanceMapSize}]`);
+    const appStats = this.analyzeArray(appearanceMap);
+    console.log(`[GVRM]        stats: min=${appStats.min.toFixed(4)}, max=${appStats.max.toFixed(4)}, nonZeros=${appStats.nonZeros}`);
     
     // ===== PHASE 2: Template Gaussian Decoding (完全版ONNX) =====
     console.log('[GVRM] Phase 2: Template Gaussian decoding');
@@ -420,19 +440,76 @@ export class GVRM {
     }
     
     // ===== PHASE 3: UV Pipeline (Optional) =====
-    if (this.uvTriangleMapping) {
+    if (this.uvTriangleMapping && this.uvFeatureMapper && this.appearanceMap && this.plyData) {
       console.log('[GVRM] Phase 3: UV pipeline');
-      console.log(`[GVRM]   ✅ UV Triangle Mapping loaded: ${this.uvTriangleMapping.numValid.toLocaleString()} valid pixels`);
+      console.log(`[GVRM]   ✅ UV Triangle Mapping: ${this.uvTriangleMapping.numValid.toLocaleString()} valid pixels`);
       console.log(`[GVRM]   Resolution: ${this.uvTriangleMapping.width}x${this.uvTriangleMapping.height}`);
 
-      // TODO: UV Pipeline Implementation
-      // 1. Map appearance features to UV space (requires inverse texture mapping)
-      // 2. Run UV Point Decoder (uv_point_decoder.onnx)
-      // 3. Transform UV Gaussians to world space using barycentric coords
-      console.log('[GVRM]   ⚠️ UV Gaussian generation not yet implemented');
-      console.log('[GVRM]   (Currently using Template Gaussians only)');
+      try {
+        // Step 1: Map appearance features to UV space
+        console.log('[GVRM]   Step 1: Mapping appearance features to UV space...');
+        const uvFeatures128 = this.uvFeatureMapper.mapToUV(
+          this.appearanceMap,
+          vertices,
+          this.plyData.faces,
+          this.uvTriangleMapping
+        );
+
+        // Step 2: Add view direction embedding (128ch → 155ch)
+        console.log('[GVRM]   Step 2: Adding view direction embedding...');
+        const uvFeatures155 = this.uvFeatureMapper.addViewEmbedding(
+          uvFeatures128,
+          [0, 0, 1]  // Canonical view direction (looking at +Z)
+        );
+
+        console.log(`[GVRM]   UV Features shape: [155, ${this.uvTriangleMapping.height}, ${this.uvTriangleMapping.width}]`);
+        const uvFeatStats = this.analyzeArray(uvFeatures155);
+        console.log(`[GVRM]   UV Features stats: min=${uvFeatStats.min.toFixed(4)}, max=${uvFeatStats.max.toFixed(4)}, nonZeros=${uvFeatStats.nonZeros}`);
+
+        // Step 3: Run UV Decoder
+        console.log('[GVRM]   Step 3: Running UV Point Decoder...');
+        const uvGaussianOutput = await this.uvDecoder.generate(
+          uvFeatures155,
+          this.uvTriangleMapping.width,
+          this.uvTriangleMapping.height,
+          this.uvTriangleMapping
+        );
+
+        console.log(`[GVRM]   ✅ UV Decoder output: ${uvGaussianOutput.uvCount.toLocaleString()} UV Gaussians`);
+
+        // Step 4: Transform UV Gaussians to world space
+        console.log('[GVRM]   Step 4: Transforming UV Gaussians to world space...');
+        const worldGaussians = this.transformUVGaussiansToWorld(
+          uvGaussianOutput,
+          vertices,
+          this.plyData.faces
+        );
+
+        // Store UV Gaussians
+        this.uvGaussians = {
+          positions: worldGaussians.positions,
+          latents: uvGaussianOutput.latent32ch,
+          opacity: uvGaussianOutput.opacity,
+          scale: uvGaussianOutput.scale,
+          rotation: uvGaussianOutput.rotation,
+          vertexCount: uvGaussianOutput.uvCount
+        };
+
+        console.log('[GVRM]   ✅ UV Pipeline complete');
+        console.log(`[GVRM]      UV Gaussians: ${this.uvGaussians.vertexCount.toLocaleString()}`);
+        const uvPosStats = this.analyzeArray(worldGaussians.positions);
+        console.log(`[GVRM]      Position stats: min=${uvPosStats.min.toFixed(4)}, max=${uvPosStats.max.toFixed(4)}`);
+
+      } catch (error) {
+        console.error('[GVRM]   ❌ UV Pipeline failed:', error);
+        console.log('[GVRM]   Continuing with Template Gaussians only');
+        this.uvGaussians = null;
+      }
     } else {
-      console.log('[GVRM] Phase 3: UV pipeline skipped (no UV Triangle Mapping)');
+      console.log('[GVRM] Phase 3: UV pipeline skipped');
+      if (!this.uvTriangleMapping) console.log('[GVRM]   Reason: No UV Triangle Mapping');
+      if (!this.uvFeatureMapper) console.log('[GVRM]   Reason: No UV Feature Mapper');
+      if (!this.appearanceMap) console.log('[GVRM]   Reason: No Appearance Map');
     }
     
     console.log('[GVRM] ─────────────────────────────');
@@ -1171,6 +1248,84 @@ export class GVRM {
     }
   }
   
+  /**
+   * Transform UV Gaussians from UV space to world space
+   * Uses barycentric coordinates to interpolate world positions from mesh vertices
+   */
+  private transformUVGaussiansToWorld(
+    uvOutput: import('./uv-decoder').UVGaussianOutput,
+    vertices: Float32Array,
+    faces: Uint32Array
+  ): { positions: Float32Array } {
+    const numGaussians = uvOutput.uvCount;
+    const worldPositions = new Float32Array(numGaussians * 3);
+
+    console.log(`[GVRM] Transforming ${numGaussians.toLocaleString()} UV Gaussians to world space...`);
+
+    let validCount = 0;
+    let invalidTriangleCount = 0;
+
+    for (let i = 0; i < numGaussians; i++) {
+      const triIdx = uvOutput.triangleIndices[i];
+      const bary0 = uvOutput.barycentricCoords[i * 3 + 0];
+      const bary1 = uvOutput.barycentricCoords[i * 3 + 1];
+      const bary2 = uvOutput.barycentricCoords[i * 3 + 2];
+
+      // Local position delta from UV decoder
+      const localDx = uvOutput.localPositions[i * 3 + 0];
+      const localDy = uvOutput.localPositions[i * 3 + 1];
+      const localDz = uvOutput.localPositions[i * 3 + 2];
+
+      // Get triangle vertex indices
+      const v0Idx = faces[triIdx * 3 + 0];
+      const v1Idx = faces[triIdx * 3 + 1];
+      const v2Idx = faces[triIdx * 3 + 2];
+
+      // Validate indices
+      if (v0Idx * 3 + 2 >= vertices.length ||
+          v1Idx * 3 + 2 >= vertices.length ||
+          v2Idx * 3 + 2 >= vertices.length) {
+        invalidTriangleCount++;
+        // Set to origin
+        worldPositions[i * 3 + 0] = 0;
+        worldPositions[i * 3 + 1] = 0;
+        worldPositions[i * 3 + 2] = 0;
+        continue;
+      }
+
+      // Get vertex world positions
+      const v0x = vertices[v0Idx * 3 + 0];
+      const v0y = vertices[v0Idx * 3 + 1];
+      const v0z = vertices[v0Idx * 3 + 2];
+
+      const v1x = vertices[v1Idx * 3 + 0];
+      const v1y = vertices[v1Idx * 3 + 1];
+      const v1z = vertices[v1Idx * 3 + 2];
+
+      const v2x = vertices[v2Idx * 3 + 0];
+      const v2y = vertices[v2Idx * 3 + 1];
+      const v2z = vertices[v2Idx * 3 + 2];
+
+      // Barycentric interpolation: world position = Σ(bary_i * v_i)
+      const baseX = bary0 * v0x + bary1 * v1x + bary2 * v2x;
+      const baseY = bary0 * v0y + bary1 * v1y + bary2 * v2y;
+      const baseZ = bary0 * v0z + bary1 * v1z + bary2 * v2z;
+
+      // Add local position delta
+      // Note: local delta is typically small and in tangent space
+      // For now, add directly (may need rotation to world space in future)
+      worldPositions[i * 3 + 0] = baseX + localDx;
+      worldPositions[i * 3 + 1] = baseY + localDy;
+      worldPositions[i * 3 + 2] = baseZ + localDz;
+
+      validCount++;
+    }
+
+    console.log(`[GVRM]   Transformed: ${validCount.toLocaleString()} valid, ${invalidTriangleCount} invalid triangles`);
+
+    return { positions: worldPositions };
+  }
+
   /**
    * Update lip sync animation based on audio level
    * TODO: Implement actual lip sync deformation based on SMPL-X jaw parameters

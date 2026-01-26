@@ -319,7 +319,13 @@ export class ImageEncoder {
         vertices: Float32Array,
         vertexCount: number,
         featureDim: number = 128
-    ): Promise<{ projectionFeature: Float32Array; idEmbedding: Float32Array; visibilityMask: Uint8Array }> {
+    ): Promise<{
+        projectionFeature: Float32Array;
+        idEmbedding: Float32Array;
+        visibilityMask: Uint8Array;
+        appearanceMap: Float32Array;  // [128, 518, 518] for UV pipeline
+        appearanceMapSize: number;
+    }> {
         if (!this.dinov2Session || !this.encoderSession) {
             throw new Error('[ImageEncoder] Not initialized');
         }
@@ -461,8 +467,15 @@ export class ImageEncoder {
         console.log(`[ImageEncoder]   Projection features: ${vertexCount} x ${featureDim}`);
         console.log(`[ImageEncoder]   ID embedding (CLS token): 768`);
         console.log(`[ImageEncoder]   Visibility mask: ${visibleCount} visible vertices`);
+        console.log(`[ImageEncoder]   Appearance map: [${appearanceDim}, ${outputMapSize}, ${outputMapSize}] (for UV pipeline)`);
 
-        return { projectionFeature, idEmbedding, visibilityMask };
+        return {
+            projectionFeature,
+            idEmbedding,
+            visibilityMask,
+            appearanceMap: new Float32Array(appearanceMap),  // Copy for UV pipeline
+            appearanceMapSize: outputMapSize
+        };
     }
 
     dispose(): void {
