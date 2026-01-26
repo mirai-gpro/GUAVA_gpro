@@ -129,9 +129,9 @@ export class GVRM {
       useWebGPU: false  // WASM使用（安定性優先）
     });
     
-    console.log('[GVRM] Created (v83: Full UV Pipeline Implementation 2026-01-26)');
+    console.log('[GVRM] Created (v84: UV Loader Fix 2026-01-26)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
-    console.log('[GVRM] 🔧 BUILD v83 - Full UV Pipeline: appearance→UV→decoder→Gaussians');
+    console.log('[GVRM] 🔧 BUILD v84 - Fixed UV Triangle Mapping loader for 20MB format');
     console.log('[GVRM] ════════════════════════════════════════════════════');
   }
   
