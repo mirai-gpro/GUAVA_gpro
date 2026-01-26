@@ -180,8 +180,9 @@ export class ImageEncoder {
         featureMap: Float32Array,
         mapSize: number,
         featureDim: number
-    ): Float32Array {
+    ): { features: Float32Array; visibilityMask: Uint8Array } {
         const output = new Float32Array(vertexCount * featureDim);
+        const visibilityMask = new Uint8Array(vertexCount);  // 1 = visible, 0 = out-of-bounds
         const mapStride = mapSize * mapSize;
 
         const R = CANONICAL_W2C.R;
@@ -212,15 +213,17 @@ export class ImageEncoder {
 
             // 修正: 範囲外の頂点はゼロ特徴 (padding_mode='zeros')
             if (u < 0 || u > mapSize - 1 || v < 0 || v > mapSize - 1) {
-                // Out of bounds - set to zero features
+                // Out of bounds - set to zero features and mark as invisible
                 for (let c = 0; c < featureDim; c++) {
                     output[i * featureDim + c] = 0;
                 }
+                visibilityMask[i] = 0;  // Not visible
                 outOfBoundsCount++;
                 continue;
             }
 
             validCount++;
+            visibilityMask[i] = 1;  // Visible
 
             const x0 = Math.floor(u);
             const y0 = Math.floor(v);
@@ -251,7 +254,7 @@ export class ImageEncoder {
 
         console.log(`[ImageEncoder] Projection sampling: ${validCount}/${vertexCount} vertices in bounds`);
         console.log(`[ImageEncoder] ⚠️ Out of bounds vertices (zero features): ${outOfBoundsCount}`);
-        return output;
+        return { features: output, visibilityMask };
     }
 
     /**
@@ -269,7 +272,7 @@ export class ImageEncoder {
         vertices: Float32Array,
         vertexCount: number,
         featureDim: number = 128
-    ): Promise<{ projectionFeature: Float32Array; idEmbedding: Float32Array }> {
+    ): Promise<{ projectionFeature: Float32Array; idEmbedding: Float32Array; visibilityMask: Uint8Array }> {
         if (!this.dinov2Session || !this.encoderSession) {
             throw new Error('[ImageEncoder] Not initialized');
         }
@@ -378,23 +381,30 @@ export class ImageEncoder {
 
         // 5. Projection sampling
         console.log('[ImageEncoder] Projection sampling...');
-        const projectionFeature = this.sampleProjectionFeatures(
+        const { features: projectionFeature, visibilityMask } = this.sampleProjectionFeatures(
             vertices,
             vertexCount,
             appearanceMap,
             outputMapSize,
             featureDim  // Use first 128 channels
         );
-        
+
         // 🔍 DEBUG: Projection sampling後の統計
         const projStats = this.getArrayStats(projectionFeature);
         console.log(`[ImageEncoder] 🔍 Projection features stats:`);
         console.log(`[ImageEncoder]   range: [${projStats.min.toFixed(4)}, ${projStats.max.toFixed(4)}]`);
         console.log(`[ImageEncoder]   nonZero: ${projStats.nonZero}/${projectionFeature.length} (${(projStats.nonZero/projectionFeature.length*100).toFixed(1)}%)`);
 
+        // Count visible vertices
+        let visibleCount = 0;
+        for (let i = 0; i < vertexCount; i++) {
+            if (visibilityMask[i]) visibleCount++;
+        }
+        console.log(`[ImageEncoder] 👁️ Visibility mask: ${visibleCount}/${vertexCount} vertices visible`);
+
         // 6. ID embedding from CLS token (768 dims)
         console.log('[ImageEncoder] Extracting CLS token (768ch)...');
-        
+
         const idEmbedding = new Float32Array(768);
         for (let i = 0; i < 768; i++) {
             idEmbedding[i] = clsToken[i];
@@ -403,8 +413,9 @@ export class ImageEncoder {
         console.log('[ImageEncoder] ✅ Feature extraction complete');
         console.log(`[ImageEncoder]   Projection features: ${vertexCount} x ${featureDim}`);
         console.log(`[ImageEncoder]   ID embedding (CLS token): 768`);
+        console.log(`[ImageEncoder]   Visibility mask: ${visibleCount} visible vertices`);
 
-        return { projectionFeature, idEmbedding };
+        return { projectionFeature, idEmbedding, visibilityMask };
     }
 
     dispose(): void {

@@ -79,6 +79,7 @@ export class GVRM {
   private uvMappingData: EHMMeshData | null = null;
   private templateGaussians: GaussianData | null = null;
   private uvGaussians: GaussianData | null = null;
+  private visibilityMask: Uint8Array | null = null;  // Tracks which vertices are visible in source image
   // idEmbeddingは不要になった！
   
   // WebGPU
@@ -251,7 +252,7 @@ export class GVRM {
     console.log(`[GVRM]   Input image: ${this.imagePath}`);
     console.log(`[GVRM]   Vertices: ${vertexCount}`);
     
-    const { projectionFeature, idEmbedding } = 
+    const { projectionFeature, idEmbedding, visibilityMask } =
       await this.imageEncoder.extractFeaturesWithSourceCamera(
         this.imagePath,
         {},
@@ -259,6 +260,9 @@ export class GVRM {
         vertexCount,
         128
       );
+
+    // Store visibility mask for opacity masking
+    this.visibilityMask = visibilityMask;
     
     console.log('[GVRM]   ✅ Encoder output:');
     console.log(`[GVRM]      Projection features: [${vertexCount}, 128]`);
@@ -299,10 +303,26 @@ export class GVRM {
     
     // Set positions from vertices (decoder doesn't modify positions)
     templateOutput.positions = vertices;
-    
+
     // Note: idEmbeddingはRFDN Refinerでは不要になった！
     // this.idEmbedding = templateOutput.id_embedding;  // ← 削除
-    
+
+    // ================================================================
+    // 重要: 画像範囲外の頂点のopacityをゼロにする
+    // Template Decoderは base_features と global_embedding から
+    // 範囲外頂点にも非ゼロのopacityを出力するため、明示的にマスク
+    // ================================================================
+    let invisibleCount = 0;
+    if (this.visibilityMask) {
+      for (let i = 0; i < vertexCount; i++) {
+        if (this.visibilityMask[i] === 0) {
+          templateOutput.opacities[i] = 0;
+          invisibleCount++;
+        }
+      }
+      console.log(`[GVRM] ⚠️ Opacity masked: ${invisibleCount}/${vertexCount} out-of-bounds vertices set to opacity=0`);
+    }
+
     this.templateGaussians = {
       positions: templateOutput.positions,  // [N, 3]
       latents: templateOutput.colors,       // [N, 32]
