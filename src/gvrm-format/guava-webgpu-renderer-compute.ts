@@ -180,73 +180,15 @@ export class GuavaWebGPURendererCompute {
     }
 
     private async createPipelines(): Promise<void> {
-        // Clear pipeline - fills output with background color
-        const clearShader = this.device.createShaderModule({
-            code: `
-                @group(0) @binding(0) var<storage, read_write> out0: array<vec4<f32>>;
-                @group(0) @binding(1) var<storage, read_write> out1: array<vec4<f32>>;
-                @group(0) @binding(2) var<storage, read_write> out2: array<vec4<f32>>;
-                @group(0) @binding(3) var<storage, read_write> out3: array<vec4<f32>>;
-                @group(0) @binding(4) var<storage, read_write> out4: array<vec4<f32>>;
-                @group(0) @binding(5) var<storage, read_write> out5: array<vec4<f32>>;
-                @group(0) @binding(6) var<storage, read_write> out6: array<vec4<f32>>;
-                @group(0) @binding(7) var<storage, read_write> out7: array<vec4<f32>>;
-                @group(0) @binding(8) var<storage, read_write> transmittance: array<f32>;
+        // NOTE: We're using CPU-based splatting (cpuSplat) for rendering,
+        // so GPU compute pipelines are not needed.
+        // The previous GPU pipeline had 10 bindings which exceeded the
+        // maxStorageBuffersPerShaderStage limit (8) on many devices.
+        //
+        // If GPU splatting is needed in the future, the buffers should be
+        // consolidated into a single large buffer with offset-based access.
 
-                struct Uniforms {
-                    view: mat4x4<f32>,
-                    proj: mat4x4<f32>,
-                    width: u32,
-                    height: u32,
-                    count: u32,
-                    pad: u32,
-                };
-                @group(0) @binding(9) var<uniform> u: Uniforms;
-
-                @compute @workgroup_size(16, 16)
-                fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-                    if (gid.x >= u.width || gid.y >= u.height) { return; }
-                    let idx = gid.y * u.width + gid.x;
-
-                    // Background = 1.0 (matching Python GUAVA bg=1.0)
-                    let bg = vec4<f32>(1.0, 1.0, 1.0, 1.0);
-                    out0[idx] = bg;
-                    out1[idx] = bg;
-                    out2[idx] = bg;
-                    out3[idx] = bg;
-                    out4[idx] = bg;
-                    out5[idx] = bg;
-                    out6[idx] = bg;
-                    out7[idx] = bg;
-                    transmittance[idx] = 1.0;  // Initial transmittance = 1
-                }
-            `
-        });
-
-        const clearBindGroupLayout = this.device.createBindGroupLayout({
-            entries: [
-                { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-            ]
-        });
-
-        this.clearPipeline = this.device.createComputePipeline({
-            layout: this.device.createPipelineLayout({ bindGroupLayouts: [clearBindGroupLayout] }),
-            compute: { module: clearShader, entryPoint: 'main' }
-        });
-
-        console.log('[ComputeRenderer] Created clear pipeline');
-
-        // Note: Full compute shader splatting would require per-pixel Gaussian sorting
-        // For now, we'll use a CPU-assisted approach for proper blending
+        console.log('[ComputeRenderer] Using CPU splatting (GPU pipelines skipped to avoid binding limit)');
     }
 
     public sort(): void {

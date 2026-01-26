@@ -1012,6 +1012,17 @@ export class GVRM {
     return { min, max, mean: sum / arr.length, nonZeros };
   }
   
+  /**
+   * Update lip sync animation based on audio level
+   * TODO: Implement actual lip sync deformation based on SMPL-X jaw parameters
+   * @param audioLevel Audio level (0-1) for lip sync animation
+   */
+  updateLipSync(audioLevel: number): void {
+    // Stub implementation - lip sync requires modifying SMPL-X jaw parameters
+    // and re-running the Gaussian splatting pipeline
+    // For now, this prevents crashes when called from external code
+  }
+
   dispose(): void {
     this.isRunning = false;
     if (this.frameId !== null) {
