@@ -410,6 +410,32 @@ export class TemplateDecoderWebGPU {
       console.log(`[TemplateDecoderWebGPU] ⚠️ WARNING: Pre-sigmoid mean is near 0 (${avgMean.toFixed(4)}) → sigmoid will output ~0.5 (GRAY)`);
     }
 
+    // 🔍 PRE-SIGMOID RGB cross-channel check
+    console.log(`[TemplateDecoderWebGPU] 🔍 PRE-SIGMOID RGB cross-channel:`);
+    let preSumDiffRG = 0, preSumDiffGB = 0;
+    let preSumDiffRG2 = 0, preSumDiffGB2 = 0;
+    for (let i = 0; i < N; i++) {
+      const offset = i * 32;
+      const r = colors[offset + 0];  // Still pre-sigmoid
+      const g = colors[offset + 1];
+      const b = colors[offset + 2];
+      const dRG = r - g;
+      const dGB = g - b;
+      preSumDiffRG += dRG;
+      preSumDiffGB += dGB;
+      preSumDiffRG2 += dRG * dRG;
+      preSumDiffGB2 += dGB * dGB;
+    }
+    const preMeanRG = preSumDiffRG / N;
+    const preMeanGB = preSumDiffGB / N;
+    const preStdRG = Math.sqrt(preSumDiffRG2 / N - preMeanRG * preMeanRG);
+    const preStdGB = Math.sqrt(preSumDiffGB2 / N - preMeanGB * preMeanGB);
+    console.log(`[TemplateDecoderWebGPU]   R-G (pre-sigmoid): mean=${preMeanRG.toFixed(6)}, σ=${preStdRG.toFixed(6)}`);
+    console.log(`[TemplateDecoderWebGPU]   G-B (pre-sigmoid): mean=${preMeanGB.toFixed(6)}, σ=${preStdGB.toFixed(6)}`);
+    if (preStdRG < 0.1 && preStdGB < 0.1) {
+      console.log(`[TemplateDecoderWebGPU] ⚠️ Pre-sigmoid R≈G≈B - problem is in the decoder output!`);
+    }
+
     // Apply sigmoid to first 3 channels (RGB) - Python版と同じ
     for (let i = 0; i < N; i++) {
       const offset = i * 32;
@@ -471,6 +497,60 @@ export class TemplateDecoderWebGPU {
     if (colorVariance[0] < 0.1 && colorVariance[1] < 0.1 && colorVariance[2] < 0.1) {
       console.log(`[TemplateDecoderWebGPU] ⚠️ WARNING: Very low color variance! All vertices have similar colors.`);
     }
+
+    // ======== 🔍🔍🔍 RGB CROSS-CHANNEL DIVERSITY CHECK (PER-VERTEX) ========
+    // This checks if R, G, B are distinct or if R≈G≈B (grayscale-ish)
+    console.log(`[TemplateDecoderWebGPU] 🔍🔍🔍 RGB CROSS-CHANNEL DIVERSITY (per-vertex):`);
+
+    // Compute R-G, G-B differences for all vertices
+    let sumDiffRG = 0, sumDiffGB = 0, sumDiffRB = 0;
+    let sumDiffRG2 = 0, sumDiffGB2 = 0, sumDiffRB2 = 0;
+
+    for (let i = 0; i < N; i++) {
+      const offset = i * 32;
+      const r = colors[offset + 0];
+      const g = colors[offset + 1];
+      const b = colors[offset + 2];
+      const dRG = r - g;
+      const dGB = g - b;
+      const dRB = r - b;
+      sumDiffRG += dRG;
+      sumDiffGB += dGB;
+      sumDiffRB += dRB;
+      sumDiffRG2 += dRG * dRG;
+      sumDiffGB2 += dGB * dGB;
+      sumDiffRB2 += dRB * dRB;
+    }
+
+    const meanDiffRG = sumDiffRG / N;
+    const meanDiffGB = sumDiffGB / N;
+    const meanDiffRB = sumDiffRB / N;
+    const stdDiffRG = Math.sqrt(sumDiffRG2 / N - meanDiffRG * meanDiffRG);
+    const stdDiffGB = Math.sqrt(sumDiffGB2 / N - meanDiffGB * meanDiffGB);
+    const stdDiffRB = Math.sqrt(sumDiffRB2 / N - meanDiffRB * meanDiffRB);
+
+    console.log(`[TemplateDecoderWebGPU]   Per-vertex channel differences:`);
+    console.log(`[TemplateDecoderWebGPU]     R-G: mean=${meanDiffRG.toFixed(6)}, σ=${stdDiffRG.toFixed(6)}`);
+    console.log(`[TemplateDecoderWebGPU]     G-B: mean=${meanDiffGB.toFixed(6)}, σ=${stdDiffGB.toFixed(6)}`);
+    console.log(`[TemplateDecoderWebGPU]     R-B: mean=${meanDiffRB.toFixed(6)}, σ=${stdDiffRB.toFixed(6)}`);
+
+    // Print sample vertices with their R-G, G-B differences
+    console.log(`[TemplateDecoderWebGPU]   Sample vertices (R, G, B, R-G, G-B):`);
+    for (let i = 0; i < Math.min(5, N); i++) {
+      const offset = i * 32;
+      const r = colors[offset + 0];
+      const g = colors[offset + 1];
+      const b = colors[offset + 2];
+      console.log(`[TemplateDecoderWebGPU]     v${i}: R=${r.toFixed(3)}, G=${g.toFixed(3)}, B=${b.toFixed(3)}, R-G=${(r-g).toFixed(3)}, G-B=${(g-b).toFixed(3)}`);
+    }
+
+    if (stdDiffRG < 0.05 && stdDiffGB < 0.05) {
+      console.log(`[TemplateDecoderWebGPU] ⚠️⚠️⚠️ PROBLEM: Per-vertex R≈G≈B (no color diversity)`);
+      console.log(`[TemplateDecoderWebGPU] This means the decoder is outputting near-grayscale colors!`);
+    } else {
+      console.log(`[TemplateDecoderWebGPU] ✅ Per-vertex colors have RGB diversity`);
+    }
+    // ======== END RGB CROSS-CHANNEL CHECK ========
     
     // Opacity: 283→128→1 + sigmoid
     let opacity_hidden = this.batchLinearRelu(features_with_view, weights.opacity_0_weight, weights.opacity_0_bias, N, 283, 128);
