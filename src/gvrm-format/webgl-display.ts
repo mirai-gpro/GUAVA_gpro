@@ -174,6 +174,65 @@ export class WebGLDisplay {
       });
       console.log('[WebGLDisplay] Applied histogram stretching: [min, max] → [0, 1]');
 
+      // ======== 🔍🔍🔍 RGB CROSS-CHANNEL ANALYSIS IN DISPLAY INPUT ========
+      console.log('[WebGLDisplay] 🔍🔍🔍 Input RGB cross-channel analysis:');
+
+      // Sample first 15 non-black pixels
+      const samplePixels: {i: number, r: number, g: number, b: number}[] = [];
+      for (let i = 0; i < width * height && samplePixels.length < 15; i++) {
+        const r = data[i * 3 + 0];
+        const g = data[i * 3 + 1];
+        const b = data[i * 3 + 2];
+        if (r > 0.01 || g > 0.01 || b > 0.01) {
+          samplePixels.push({ i, r, g, b });
+        }
+      }
+
+      console.log('[WebGLDisplay]   Sample input pixels (before global stretch):');
+      for (const sp of samplePixels.slice(0, 8)) {
+        const diffRG = (sp.r - sp.g).toFixed(4);
+        const diffGB = (sp.g - sp.b).toFixed(4);
+        console.log(`[WebGLDisplay]     px ${sp.i}: R=${sp.r.toFixed(4)}, G=${sp.g.toFixed(4)}, B=${sp.b.toFixed(4)} | R-G=${diffRG}, G-B=${diffGB}`);
+      }
+
+      // Compute overall R-G, G-B variance
+      let sumDiffRG = 0, sumDiffGB = 0;
+      let sumDiffRG2 = 0, sumDiffGB2 = 0;
+      let countNonBg = 0;
+
+      for (let i = 0; i < width * height; i++) {
+        const r = data[i * 3 + 0];
+        const g = data[i * 3 + 1];
+        const b = data[i * 3 + 2];
+        if (r > 0.001 || g > 0.001 || b > 0.001) {
+          const dRG = r - g;
+          const dGB = g - b;
+          sumDiffRG += dRG;
+          sumDiffGB += dGB;
+          sumDiffRG2 += dRG * dRG;
+          sumDiffGB2 += dGB * dGB;
+          countNonBg++;
+        }
+      }
+
+      if (countNonBg > 0) {
+        const meanDiffRG = sumDiffRG / countNonBg;
+        const meanDiffGB = sumDiffGB / countNonBg;
+        const varDiffRG = sumDiffRG2 / countNonBg - meanDiffRG * meanDiffRG;
+        const varDiffGB = sumDiffGB2 / countNonBg - meanDiffGB * meanDiffGB;
+
+        console.log(`[WebGLDisplay]   Input RGB cross-channel (${countNonBg} pixels):`);
+        console.log(`[WebGLDisplay]     R-G: mean=${meanDiffRG.toFixed(6)}, σ=${Math.sqrt(varDiffRG).toFixed(6)}`);
+        console.log(`[WebGLDisplay]     G-B: mean=${meanDiffGB.toFixed(6)}, σ=${Math.sqrt(varDiffGB).toFixed(6)}`);
+
+        if (Math.sqrt(varDiffRG) < 0.01 && Math.sqrt(varDiffGB) < 0.01) {
+          console.log(`[WebGLDisplay]   ⚠️⚠️⚠️ Input colors have R≈G≈B - grayscale-ish input!`);
+        } else {
+          console.log(`[WebGLDisplay]   ✅ Input has RGB diversity`);
+        }
+      }
+      // ======== END RGB ANALYSIS ========
+
       // ストレッチ後は露出調整不要
       this.shaderMaterial.uniforms.uExposure.value = 1.0;
       this.shaderMaterial.uniforms.uContrast.value = 1.0;
