@@ -564,6 +564,74 @@ export class GVRM {
             console.log(`[GVRM]   Ch ${ch} (${chName}): [${chStats[ch].min.toFixed(4)}, ${chStats[ch].max.toFixed(4)}], mean=${chStats[ch].mean.toFixed(4)}, pixels=${chStats[ch].count}`);
           }
           console.log('[GVRM]   Applied: per-channel contrast stretch [min,max]→[0,1] + gamma=0.5 (aggressive brightness)');
+
+          // ======== 🔍🔍🔍 RGB CROSS-CHANNEL ANALYSIS ========
+          // Check if R≈G≈B (causes gray output)
+          console.log('[GVRM] 🔍🔍🔍 RGB CROSS-CHANNEL ANALYSIS:');
+
+          // Sample 20 non-background pixels
+          const samplePixels: {x: number, y: number, r: number, g: number, b: number}[] = [];
+          for (let p = 0; p < pixelCount && samplePixels.length < 20; p++) {
+            const r = coarseFeatures[0 * pixelCount + p];
+            const g = coarseFeatures[1 * pixelCount + p];
+            const b = coarseFeatures[2 * pixelCount + p];
+            if (r > 0.01 || g > 0.01 || b > 0.01) {  // Non-background
+              samplePixels.push({
+                x: p % width,
+                y: Math.floor(p / width),
+                r, g, b
+              });
+            }
+          }
+
+          console.log('[GVRM]   Sample rendered pixels (RAW before contrast):');
+          for (const sp of samplePixels.slice(0, 10)) {
+            const diff_rg = Math.abs(sp.r - sp.g);
+            const diff_gb = Math.abs(sp.g - sp.b);
+            const diff_rb = Math.abs(sp.r - sp.b);
+            console.log(`[GVRM]     (${sp.x},${sp.y}): R=${sp.r.toFixed(4)}, G=${sp.g.toFixed(4)}, B=${sp.b.toFixed(4)} | diff: R-G=${diff_rg.toFixed(4)}, G-B=${diff_gb.toFixed(4)}, R-B=${diff_rb.toFixed(4)}`);
+          }
+
+          // Compute variance of (R-G), (G-B), (R-B) for ALL non-background pixels
+          let sumDiffRG = 0, sumDiffGB = 0, sumDiffRB = 0;
+          let sumDiffRG2 = 0, sumDiffGB2 = 0, sumDiffRB2 = 0;
+          let countNonBg = 0;
+
+          for (let p = 0; p < pixelCount; p++) {
+            const r = coarseFeatures[0 * pixelCount + p];
+            const g = coarseFeatures[1 * pixelCount + p];
+            const b = coarseFeatures[2 * pixelCount + p];
+            if (r > 0.001 || g > 0.001 || b > 0.001) {
+              const dRG = r - g;
+              const dGB = g - b;
+              const dRB = r - b;
+              sumDiffRG += dRG;
+              sumDiffGB += dGB;
+              sumDiffRB += dRB;
+              sumDiffRG2 += dRG * dRG;
+              sumDiffGB2 += dGB * dGB;
+              sumDiffRB2 += dRB * dRB;
+              countNonBg++;
+            }
+          }
+
+          const meanDiffRG = countNonBg > 0 ? sumDiffRG / countNonBg : 0;
+          const meanDiffGB = countNonBg > 0 ? sumDiffGB / countNonBg : 0;
+          const meanDiffRB = countNonBg > 0 ? sumDiffRB / countNonBg : 0;
+          const varDiffRG = countNonBg > 0 ? sumDiffRG2 / countNonBg - meanDiffRG * meanDiffRG : 0;
+          const varDiffGB = countNonBg > 0 ? sumDiffGB2 / countNonBg - meanDiffGB * meanDiffGB : 0;
+          const varDiffRB = countNonBg > 0 ? sumDiffRB2 / countNonBg - meanDiffRB * meanDiffRB : 0;
+
+          console.log(`[GVRM]   Cross-channel differences (${countNonBg} non-bg pixels):`);
+          console.log(`[GVRM]     R-G: mean=${meanDiffRG.toFixed(6)}, σ=${Math.sqrt(varDiffRG).toFixed(6)}`);
+          console.log(`[GVRM]     G-B: mean=${meanDiffGB.toFixed(6)}, σ=${Math.sqrt(varDiffGB).toFixed(6)}`);
+          console.log(`[GVRM]     R-B: mean=${meanDiffRB.toFixed(6)}, σ=${Math.sqrt(varDiffRB).toFixed(6)}`);
+
+          if (Math.sqrt(varDiffRG) < 0.01 && Math.sqrt(varDiffGB) < 0.01) {
+            console.log('[GVRM]   ⚠️⚠️⚠️ PROBLEM DETECTED: R≈G≈B (colors are nearly identical!)');
+            console.log('[GVRM]   This explains the gray output. The rendering pipeline is losing color diversity.');
+          }
+          // ======== END RGB ANALYSIS ========
         }
       } else {
         // Neural Refiner (SimpleUNet): 32ch特徴マップを[0,1]に正規化して入力

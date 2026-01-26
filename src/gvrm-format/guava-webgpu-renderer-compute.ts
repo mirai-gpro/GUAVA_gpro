@@ -322,6 +322,66 @@ export class GuavaWebGPURendererCompute {
                 console.log(`  First (back): idx=${first.index}, depth=${first.depth.toFixed(4)}, screen=(${first.screenX.toFixed(1)}, ${first.screenY.toFixed(1)}), radius=${first.screenRadius.toFixed(2)}`);
                 console.log(`  Last (front): idx=${last.index}, depth=${last.depth.toFixed(4)}, screen=(${last.screenX.toFixed(1)}, ${last.screenY.toFixed(1)}), radius=${last.screenRadius.toFixed(2)}`);
             }
+
+            // ======== 🔍 DEBUG: INPUT LATENT RGB DIVERSITY CHECK ========
+            console.log('[ComputeRenderer] 🔍🔍🔍 INPUT LATENT RGB DIVERSITY CHECK:');
+            const latents = this.gaussianData.latents;
+
+            // Check first 10 visible Gaussians
+            console.log('[ComputeRenderer]   First 10 visible Gaussians (ch 0,1,2 = RGB):');
+            for (let j = 0; j < Math.min(10, this.sortedGaussians.length); j++) {
+                const idx = this.sortedGaussians[j].index;
+                const r = latents[idx * 32 + 0];
+                const g = latents[idx * 32 + 1];
+                const b = latents[idx * 32 + 2];
+                const diffRG = Math.abs(r - g);
+                const diffGB = Math.abs(g - b);
+                console.log(`[ComputeRenderer]     Gaussian ${idx}: R=${r.toFixed(4)}, G=${g.toFixed(4)}, B=${b.toFixed(4)} | diff: R-G=${diffRG.toFixed(4)}, G-B=${diffGB.toFixed(4)}`);
+            }
+
+            // Compute RGB diversity for ALL visible Gaussians
+            let sumR = 0, sumG = 0, sumB = 0;
+            let sumRG_diff = 0, sumGB_diff = 0;
+            let sumRG_diff2 = 0, sumGB_diff2 = 0;
+
+            for (const sg of this.sortedGaussians) {
+                const idx = sg.index;
+                const r = latents[idx * 32 + 0];
+                const g = latents[idx * 32 + 1];
+                const b = latents[idx * 32 + 2];
+                sumR += r;
+                sumG += g;
+                sumB += b;
+                const dRG = r - g;
+                const dGB = g - b;
+                sumRG_diff += dRG;
+                sumGB_diff += dGB;
+                sumRG_diff2 += dRG * dRG;
+                sumGB_diff2 += dGB * dGB;
+            }
+
+            const n = this.sortedGaussians.length;
+            if (n > 0) {
+                const meanR = sumR / n;
+                const meanG = sumG / n;
+                const meanB = sumB / n;
+                const meanRG = sumRG_diff / n;
+                const meanGB = sumGB_diff / n;
+                const varRG = sumRG_diff2 / n - meanRG * meanRG;
+                const varGB = sumGB_diff2 / n - meanGB * meanGB;
+
+                console.log(`[ComputeRenderer]   Overall stats for ${n} visible Gaussians:`);
+                console.log(`[ComputeRenderer]     Mean R=${meanR.toFixed(4)}, G=${meanG.toFixed(4)}, B=${meanB.toFixed(4)}`);
+                console.log(`[ComputeRenderer]     R-G diff: mean=${meanRG.toFixed(6)}, σ=${Math.sqrt(varRG).toFixed(6)}`);
+                console.log(`[ComputeRenderer]     G-B diff: mean=${meanGB.toFixed(6)}, σ=${Math.sqrt(varGB).toFixed(6)}`);
+
+                if (Math.sqrt(varRG) < 0.05 && Math.sqrt(varGB) < 0.05) {
+                    console.log(`[ComputeRenderer]   ⚠️ WARNING: Input latents have R≈G≈B (low diversity)`);
+                } else {
+                    console.log(`[ComputeRenderer]   ✅ Input latents have RGB color diversity`);
+                }
+            }
+            // ======== END DEBUG ========
         }
     }
 
@@ -426,6 +486,74 @@ export class GuavaWebGPURendererCompute {
                 }
             }
         }
+
+        // ======== 🔍 DEBUG: OUTPUT RGB CHECK AFTER SPLATTING ========
+        if (this.renderCount === 1) {
+            console.log('[ComputeRenderer] 🔍🔍🔍 OUTPUT RGB CHECK (after splatting):');
+
+            // Find non-background pixels and check their RGB
+            const sampleOutputs: {x: number, y: number, r: number, g: number, b: number, T: number}[] = [];
+            for (let p = 0; p < pixelCount && sampleOutputs.length < 15; p++) {
+                const r = outputs[0][p * 4 + 0];
+                const g = outputs[0][p * 4 + 1];
+                const b = outputs[0][p * 4 + 2];
+                const T = transmittance[p];
+                // Non-background = T < 1.0 (something was rendered here)
+                if (T < 0.99) {
+                    sampleOutputs.push({
+                        x: p % width,
+                        y: Math.floor(p / width),
+                        r, g, b, T
+                    });
+                }
+            }
+
+            console.log('[ComputeRenderer]   Sample output pixels (accumulated RGB before background):');
+            for (const sp of sampleOutputs.slice(0, 10)) {
+                const diffRG = Math.abs(sp.r - sp.g);
+                const diffGB = Math.abs(sp.g - sp.b);
+                console.log(`[ComputeRenderer]     (${sp.x},${sp.y}): R=${sp.r.toFixed(4)}, G=${sp.g.toFixed(4)}, B=${sp.b.toFixed(4)}, T=${sp.T.toFixed(4)} | diff: R-G=${diffRG.toFixed(4)}, G-B=${diffGB.toFixed(4)}`);
+            }
+
+            // Check overall diversity in outputs
+            let sumDiffRG = 0, sumDiffGB = 0;
+            let sumDiffRG2 = 0, sumDiffGB2 = 0;
+            let countRendered = 0;
+
+            for (let p = 0; p < pixelCount; p++) {
+                if (transmittance[p] < 0.99) {
+                    const r = outputs[0][p * 4 + 0];
+                    const g = outputs[0][p * 4 + 1];
+                    const b = outputs[0][p * 4 + 2];
+                    const dRG = r - g;
+                    const dGB = g - b;
+                    sumDiffRG += dRG;
+                    sumDiffGB += dGB;
+                    sumDiffRG2 += dRG * dRG;
+                    sumDiffGB2 += dGB * dGB;
+                    countRendered++;
+                }
+            }
+
+            if (countRendered > 0) {
+                const meanDiffRG = sumDiffRG / countRendered;
+                const meanDiffGB = sumDiffGB / countRendered;
+                const varDiffRG = sumDiffRG2 / countRendered - meanDiffRG * meanDiffRG;
+                const varDiffGB = sumDiffGB2 / countRendered - meanDiffGB * meanDiffGB;
+
+                console.log(`[ComputeRenderer]   Output RGB diversity (${countRendered} rendered pixels):`);
+                console.log(`[ComputeRenderer]     R-G diff: mean=${meanDiffRG.toFixed(6)}, σ=${Math.sqrt(varDiffRG).toFixed(6)}`);
+                console.log(`[ComputeRenderer]     G-B diff: mean=${meanDiffGB.toFixed(6)}, σ=${Math.sqrt(varDiffGB).toFixed(6)}`);
+
+                if (Math.sqrt(varDiffRG) < 0.01 && Math.sqrt(varDiffGB) < 0.01) {
+                    console.log(`[ComputeRenderer]   ⚠️⚠️⚠️ PROBLEM: Output colors have R≈G≈B (no diversity)`);
+                    console.log(`[ComputeRenderer]   The splatting process is averaging out the color differences!`);
+                } else {
+                    console.log(`[ComputeRenderer]   ✅ Output maintains RGB diversity`);
+                }
+            }
+        }
+        // ======== END DEBUG ========
 
         // Upload results to GPU buffers
         for (let i = 0; i < 8; i++) {
