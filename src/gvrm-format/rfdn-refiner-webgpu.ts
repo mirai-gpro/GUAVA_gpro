@@ -1,12 +1,12 @@
 /**
- * rfdn-refiner-webgpu.ts
- * 
- * 蒸留済みRFDN Neural Refiner (178KB)
- * 元のStyleUNet (107MB) から630倍圧縮
- * 
- * 入力: 32ch Feature Map [1, 32, 512, 512]
- * 出力: RGB画像 [1, 3, 512, 512]
- * 
+ * neural-refiner-webgpu.ts
+ *
+ * SimpleUNet Neural Refiner (38MB)
+ * StyleUNetのUNet部分を使用した軽量モデル
+ *
+ * 入力: 32ch Feature Map [1, 32, 512, 512] (値域 [0, 1] に正規化必須)
+ * 出力: RGB画像 [1, 3, 512, 512] (sigmoid適用後 [0, 1])
+ *
  * 使い方:
  *   const refiner = new RFDNRefiner();
  *   await refiner.init();
@@ -31,7 +31,7 @@ export class RFDNRefiner {
 
   constructor(config: RefinerConfig = {}) {
     this.config = {
-      modelPath: config.modelPath ?? '/assets/rfdn_refiner.onnx',
+      modelPath: config.modelPath ?? '/assets/simpleunet_trained.onnx',
       inputChannels: config.inputChannels ?? 32,
       inputSize: config.inputSize ?? 512,
       useWebGPU: config.useWebGPU ?? false,
@@ -44,10 +44,10 @@ export class RFDNRefiner {
   async init(): Promise<void> {
     if (this.initialized) return;
 
-    console.log('[RFDNRefiner] Initializing...');
-    console.log('[RFDNRefiner]   Model: rfdn_refiner.onnx (178KB)');
-    console.log('[RFDNRefiner]   Input: 32ch × 512 × 512');
-    console.log('[RFDNRefiner]   Output: RGB × 512 × 512');
+    console.log('[NeuralRefiner] Initializing...');
+    console.log('[NeuralRefiner]   Model: simpleunet_trained.onnx (38MB)');
+    console.log('[NeuralRefiner]   Input: 32ch × 512 × 512 (normalized to [0,1])');
+    console.log('[NeuralRefiner]   Output: RGB × 512 × 512');
 
     try {
       // ONNX Runtime Web設定
@@ -56,7 +56,7 @@ export class RFDNRefiner {
       if (this.config.useWebGPU) {
         // WebGPU使用 (対応ブラウザのみ)
         executionProviders.push('webgpu');
-        console.log('[RFDNRefiner]   Backend: WebGPU');
+        console.log('[NeuralRefiner]   Backend: WebGPU');
       }
       
       // フォールバック: WASM
@@ -82,15 +82,15 @@ export class RFDNRefiner {
       );
 
       // 入出力情報を確認
-      console.log('[RFDNRefiner]   Input names:', this.session.inputNames);
-      console.log('[RFDNRefiner]   Output names:', this.session.outputNames);
+      console.log('[NeuralRefiner]   Input names:', this.session.inputNames);
+      console.log('[NeuralRefiner]   Output names:', this.session.outputNames);
 
       this.initialized = true;
-      console.log('[RFDNRefiner] ✅ Initialized');
+      console.log('[NeuralRefiner] ✅ Initialized');
 
     } catch (error) {
-      console.error('[RFDNRefiner] ❌ Initialization failed:', error);
-      throw new Error(`RFDN Refiner initialization failed: ${error}`);
+      console.error('[NeuralRefiner] ❌ Initialization failed:', error);
+      throw new Error(`Neural Refiner initialization failed: ${error}`);
     }
   }
 
@@ -101,7 +101,7 @@ export class RFDNRefiner {
    */
   async process(featureMap: Float32Array): Promise<Float32Array> {
     if (!this.session) {
-      throw new Error('RFDNRefiner not initialized. Call init() first.');
+      throw new Error('NeuralRefiner not initialized. Call init() first.');
     }
 
     const { inputChannels, inputSize } = this.config;
@@ -116,11 +116,11 @@ export class RFDNRefiner {
 
     // 入力統計
     const inputStats = this.computeStats(featureMap);
-    console.log('[RFDNRefiner] Input stats:', inputStats);
+    console.log('[NeuralRefiner] Input stats:', inputStats);
 
     // NaN/Inf をクリーンアップ
     if (inputStats.hasInvalid) {
-      console.warn('[RFDNRefiner] ⚠️ Cleaning invalid values in input...');
+      console.warn('[NeuralRefiner] ⚠️ Cleaning invalid values in input...');
       for (let i = 0; i < featureMap.length; i++) {
         if (!isFinite(featureMap[i])) {
           featureMap[i] = 0;
@@ -131,7 +131,7 @@ export class RFDNRefiner {
     // 極端な値をクリップ（GPUハングを防ぐ）
     const absMax = Math.max(Math.abs(inputStats.min), Math.abs(inputStats.max));
     if (absMax > 100) {
-      console.warn(`[RFDNRefiner] ⚠️ Extreme values detected (max=${absMax.toFixed(1)}), clipping to [-10, 10]`);
+      console.warn(`[NeuralRefiner] ⚠️ Extreme values detected (max=${absMax.toFixed(1)}), clipping to [-10, 10]`);
       for (let i = 0; i < featureMap.length; i++) {
         if (featureMap[i] > 10) featureMap[i] = 10;
         if (featureMap[i] < -10) featureMap[i] = -10;
@@ -146,7 +146,7 @@ export class RFDNRefiner {
     );
 
     try {
-      console.log('[RFDNRefiner] Running inference...');
+      console.log('[NeuralRefiner] Running inference...');
       const startTime = performance.now();
 
       // 推論実行
@@ -156,53 +156,57 @@ export class RFDNRefiner {
       const outputs = await this.session.run(feeds);
       
       const endTime = performance.now();
-      console.log(`[RFDNRefiner] Inference time: ${(endTime - startTime).toFixed(1)}ms`);
+      console.log(`[NeuralRefiner] Inference time: ${(endTime - startTime).toFixed(1)}ms`);
 
       // 出力取得
       const outputName = this.session.outputNames[0];
       const rawOutput = outputs[outputName].data as Float32Array;
       const dims = outputs[outputName].dims;
 
-      console.log('[RFDNRefiner] Output dims:', dims);
+      console.log('[NeuralRefiner] Output dims:', dims);
 
-      // CHW → HWC 変換
+      // CHW → HWC 変換 + sigmoid適用
       const H = inputSize;
       const W = inputSize;
       const C = 3;
       const output = new Float32Array(H * W * C);
 
+      // sigmoid関数: 1 / (1 + exp(-x))
+      const sigmoid = (x: number): number => 1 / (1 + Math.exp(-x));
+
       if (dims.length === 4 && dims[1] === 3) {
         // [1, 3, H, W] → [H, W, 3]
-        // チャンネル順序を試す: RGB or BGR
-        const swapRB = true;  // ← RとBを入れ替えてみる
+        // SimpleUNetは生の値を出力するのでsigmoidを適用
         for (let h = 0; h < H; h++) {
           for (let w = 0; w < W; w++) {
             for (let c = 0; c < C; c++) {
-              const srcC = swapRB ? (c === 0 ? 2 : c === 2 ? 0 : c) : c;
-              const srcIdx = srcC * H * W + h * W + w;
+              const srcIdx = c * H * W + h * W + w;
               const dstIdx = h * W * C + w * C + c;
-              output[dstIdx] = rawOutput[srcIdx];
+              // sigmoid適用で[0, 1]範囲に変換
+              output[dstIdx] = sigmoid(rawOutput[srcIdx]);
             }
           }
         }
       } else {
-        // そのままコピー
-        output.set(rawOutput.slice(0, H * W * C));
+        // そのままコピー + sigmoid
+        for (let i = 0; i < H * W * C; i++) {
+          output[i] = sigmoid(rawOutput[i]);
+        }
       }
 
-      // 出力を [0, 1] にクランプ
+      // sigmoid適用後は既に[0, 1]なのでクランプ不要だが念のため
       for (let i = 0; i < output.length; i++) {
         output[i] = Math.max(0, Math.min(1, output[i]));
       }
 
       // 出力統計
       const outputStats = this.computeStats(output);
-      console.log('[RFDNRefiner] Output stats:', outputStats);
+      console.log('[NeuralRefiner] Output stats:', outputStats);
 
       return output;
 
     } catch (error) {
-      console.error('[RFDNRefiner] ❌ Inference failed:', error);
+      console.error('[NeuralRefiner] ❌ Inference failed:', error);
       throw error;
     }
   }
@@ -282,7 +286,7 @@ export class RFDNRefiner {
       this.session.release();
       this.session = null;
       this.initialized = false;
-      console.log('[RFDNRefiner] Disposed');
+      console.log('[NeuralRefiner] Disposed');
     }
   }
 
@@ -301,7 +305,7 @@ export class RFDNRefiner {
 export async function example() {
   // 1. 初期化
   const refiner = new RFDNRefiner({
-    modelPath: '/assets/rfdn_refiner.onnx',
+    modelPath: '/assets/simpleunet_trained.onnx',
     useWebGPU: true  // WebGPU対応ブラウザで高速化
   });
   await refiner.init();

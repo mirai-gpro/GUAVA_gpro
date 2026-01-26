@@ -1,7 +1,8 @@
 // gvrm.ts
-// 修正版 v73: TemplateDecoderWebGPU対応 + scaleクランプ修正
-// - RFDN Refiner (178KB軽量モデル)
-// - TemplateDecoderWebGPU (scaleオーバーフロー修正済み)
+// 修正版 v74: SimpleUNet Neural Refiner (GUAVA pretrained weights)
+// - SimpleUNet Refiner (38MB from GUAVA checkpoint)
+// - 入力正規化: Gaussian出力を[0, 1]に変換
+// - Sigmoid適用: 出力を[0, 1]に変換
 
 import { ImageEncoder } from './image-encoder';
 import { InverseTextureMapper, type EHMMeshData, type ImageFeatures } from './inverse-texture-mapping';
@@ -43,18 +44,19 @@ interface PLYData {
 
 /**
  * GVRM - GUAVA Virtual Reality Model
- * 
- * v72: RFDN Refiner対応版
- * - 蒸留済み軽量Neural Refiner (178KB, 元の630倍圧縮)
- * - idEmbedding不要 (32ch入力のみ)
- * 
+ *
+ * v74: SimpleUNet Refiner対応版
+ * - GUAVA公式チェックポイントからSimpleUNet抽出 (38MB)
+ * - 入力正規化: Gaussian出力を[0, 1]に変換
+ * - Sigmoid適用: 出力を[0, 1]に変換
+ *
  * Pipeline:
  * 1. Image Encoder: Image → Features (projection + ID embedding)
  * 2. Template Decoder: 3入力 (projection, base, id) → Template Gaussians
  * 3. Inverse Texture Mapping: Image → UV features (optional)
  * 4. UV Decoder: UV features → UV Gaussians (optional)
  * 5. WebGPU Rendering: Gaussians → Coarse feature map (32ch)
- * 6. RFDN Refiner: Coarse 32ch → Refined RGB (idEmb不要！)
+ * 6. SimpleUNet Refiner: Coarse 32ch [0,1] → Refined RGB [0,1]
  */
 export class GVRM {
   // Asset paths
@@ -70,7 +72,7 @@ export class GVRM {
   private templateDecoder: TemplateDecoderWebGPU | null = null;
   private inverseTextureMapper: InverseTextureMapper;
   private uvDecoder: UVDecoder;
-  private neuralRefiner: RFDNRefiner;  // ← RFDN (軽量版)
+  private neuralRefiner: RFDNRefiner;  // SimpleUNet (GUAVA pretrained)
   private webglDisplay: WebGLDisplay | null = null;
   
   // Data
@@ -110,15 +112,14 @@ export class GVRM {
     this.inverseTextureMapper = new InverseTextureMapper(512);
     this.uvDecoder = new UVDecoder();
     
-    // Neural Refiner: RFDN (178KB distilled model)
-    // StyleUNet export is problematic, using RFDN for now
-    const useStyleUNet = false;  // ← RFDNを使用（StyleUNetエクスポート問題）
+    // Neural Refiner: SimpleUNet (38MB from GUAVA pretrained weights)
+    // StyleUNetのUNet部分を使用 (ModulatedConv2dがONNX非対応のため)
     this.neuralRefiner = new RFDNRefiner({
-      modelPath: useStyleUNet ? '/assets/styleunet_refiner.onnx' : '/assets/rfdn_refiner.onnx',
+      modelPath: '/assets/simpleunet_trained.onnx',
       useWebGPU: false  // WASM使用（安定性優先）
     });
     
-    console.log('[GVRM] Created (v72: RFDN Refiner)');
+    console.log('[GVRM] Created (v74: SimpleUNet Refiner)');
   }
   
   async init(config?: GVRMConfig): Promise<void> {
@@ -130,7 +131,7 @@ export class GVRM {
     try {
       console.log('[GVRM] 🚀 Initializing pipeline...');
       console.log('[GVRM] ═══════════════════════════════');
-      console.log('[GVRM] 📦 Using RFDN Refiner (178KB, 630x smaller)');
+      console.log('[GVRM] 📦 Using SimpleUNet Refiner (38MB, GUAVA pretrained)');
       
       // 1. WebGPU setup
       console.log('[GVRM] Step 1/6: WebGPU initialization');
@@ -189,7 +190,7 @@ export class GVRM {
       await Promise.all([
         this.imageEncoder.init(),
         this.uvDecoder.init('/assets'),
-        this.neuralRefiner.init()  // RFDN (178KB) - 超高速ロード
+        this.neuralRefiner.init()  // SimpleUNet (38MB) - GUAVA pretrained weights
       ]);
       
       // Template Decoder initialization (WebGPU)
@@ -197,7 +198,7 @@ export class GVRM {
       await this.templateDecoder.init(this.gpuDevice!, '/assets');
       
       console.log('[GVRM]   ✅ All modules initialized');
-      console.log('[GVRM]   📊 RFDN Refiner: 178KB loaded (vs 107MB original)');
+      console.log('[GVRM]   📊 SimpleUNet Refiner: 38MB loaded (GUAVA pretrained)');
       
       // 5. Run inference pipeline
       console.log('[GVRM] Step 5/6: Running inference pipeline');
@@ -218,7 +219,7 @@ export class GVRM {
       console.log('[GVRM]   UV Gaussians: ', this.uvGaussians?.vertexCount || 0);
       console.log('[GVRM]   Total Gaussians: ', 
         (this.templateGaussians?.vertexCount || 0) + (this.uvGaussians?.vertexCount || 0));
-      console.log('[GVRM]   🚀 RFDN Refiner: No idEmbedding needed!');
+      console.log('[GVRM]   🚀 SimpleUNet Refiner: Input normalized to [0,1]');
       
       this.renderFrame();
       
@@ -449,8 +450,9 @@ export class GVRM {
   }
   
   /**
-   * Render loop (RFDN Refiner版 - idEmbedding不要)
-   * フレームレート制限: GPUハング対策
+   * Render loop (SimpleUNet Refiner版)
+   * - 入力: Gaussian出力を[0, 1]に正規化
+   * - 出力: sigmoid適用後の[0, 1] RGB
    */
   private lastRenderTime: number = 0;
   private readonly MIN_FRAME_INTERVAL = 500; // 最低500ms間隔 (2fps)
@@ -535,8 +537,10 @@ export class GVRM {
           console.log(`[GVRM]   Normalization: [${minVal.toFixed(4)}, ${maxVal.toFixed(4)}] → [0, 1]`);
         }
       } else {
-        // RFDN Refiner: idEmbedding不要！32ch特徴マップのみ
-        displayRGB = await this.neuralRefiner.process(coarseFeatures);
+        // Neural Refiner (SimpleUNet): 32ch特徴マップを[0, 1]に正規化して入力
+        // SimpleUNetはトレーニング時に[0, 1]範囲の入力を期待している
+        const normalizedFeatures = this.normalizeToZeroOne(coarseFeatures, this.frameCount === 1);
+        displayRGB = await this.neuralRefiner.process(normalizedFeatures);
       }
 
       if (this.webglDisplay) {
@@ -550,7 +554,7 @@ export class GVRM {
         console.log(`  Coarse features (32ch): min=${coarseStats.min.toFixed(4)}, max=${coarseStats.max.toFixed(4)}`);
         console.log(`  Display RGB: min=${displayStats.min.toFixed(4)}, max=${displayStats.max.toFixed(4)}`);
         if (!this.debugBypassRFDN) {
-          console.log(`  🚀 RFDN Refiner: No idEmbedding used (178KB model)`);
+          console.log(`  🚀 SimpleUNet Refiner: Input normalized to [0,1], sigmoid applied`);
         }
       }
 
@@ -851,6 +855,42 @@ export class GVRM {
     return new Float32Array(await response.arrayBuffer());
   }
   
+  /**
+   * Normalize 32-channel features to [0, 1] range for SimpleUNet
+   * SimpleUNet expects input in [0, 1] range (verified from training code)
+   */
+  private normalizeToZeroOne(features: Float32Array, logStats: boolean = false): Float32Array {
+    const normalized = new Float32Array(features.length);
+
+    // Compute min/max across all channels
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i < features.length; i++) {
+      const v = features[i];
+      if (isFinite(v)) {
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+    }
+
+    const range = max - min || 1;
+
+    // Normalize to [0, 1]
+    for (let i = 0; i < features.length; i++) {
+      const v = features[i];
+      if (isFinite(v)) {
+        normalized[i] = (v - min) / range;
+      } else {
+        normalized[i] = 0;
+      }
+    }
+
+    if (logStats) {
+      console.log(`[GVRM] Normalizing features: [${min.toFixed(4)}, ${max.toFixed(4)}] → [0, 1]`);
+    }
+
+    return normalized;
+  }
+
   private analyzeArray(arr: Float32Array): { min: number; max: number; mean: number; nonZeros: number } {
     let min = Infinity, max = -Infinity, sum = 0, nonZeros = 0;
     for (let i = 0; i < arr.length; i++) {

@@ -171,8 +171,7 @@ export class ImageEncoder {
      * Projection Sampling - 公式実装の正確な移植
      * appearanceMap (37x37 or 518x518) から頂点位置に基づいて特徴をサンプリング
      *
-     * 修正: 画像範囲外の頂点はゼロ特徴 (padding_mode='zeros')
-     * これにより、見えない部分の頂点に対してTemplate Decoderが低opacityを出力
+     * Python参照: padding_mode='border' (範囲外は端の値を使用)
      */
     private sampleProjectionFeatures(
         vertices: Float32Array,
@@ -182,14 +181,14 @@ export class ImageEncoder {
         featureDim: number
     ): { features: Float32Array; visibilityMask: Uint8Array } {
         const output = new Float32Array(vertexCount * featureDim);
-        const visibilityMask = new Uint8Array(vertexCount);  // 1 = visible, 0 = out-of-bounds
+        const visibilityMask = new Uint8Array(vertexCount);
         const mapStride = mapSize * mapSize;
 
         const R = CANONICAL_W2C.R;
         const T = CANONICAL_W2C.T;
         const invtanfov = INV_TAN_FOV;
 
-        let validCount = 0;
+        let inBoundsCount = 0;
         let outOfBoundsCount = 0;
 
         for (let i = 0; i < vertexCount; i++) {
@@ -208,22 +207,22 @@ export class ImageEncoder {
             const imgY = (cy * invtanfov) / divZ;
 
             // Grid sample (align_corners=False)
-            const u = ((imgX + 1.0) * mapSize - 1.0) / 2.0;
-            const v = ((imgY + 1.0) * mapSize - 1.0) / 2.0;
+            let u = ((imgX + 1.0) * mapSize - 1.0) / 2.0;
+            let v = ((imgY + 1.0) * mapSize - 1.0) / 2.0;
 
-            // 修正: 範囲外の頂点はゼロ特徴 (padding_mode='zeros')
-            if (u < 0 || u > mapSize - 1 || v < 0 || v > mapSize - 1) {
-                // Out of bounds - set to zero features and mark as invisible
-                for (let c = 0; c < featureDim; c++) {
-                    output[i * featureDim + c] = 0;
-                }
-                visibilityMask[i] = 0;  // Not visible
+            // padding_mode='border': 範囲外は端にクランプ（Python参照と同じ）
+            const wasOutOfBounds = u < 0 || u > mapSize - 1 || v < 0 || v > mapSize - 1;
+            if (wasOutOfBounds) {
                 outOfBoundsCount++;
-                continue;
+                visibilityMask[i] = 0;  // 範囲外
+            } else {
+                inBoundsCount++;
+                visibilityMask[i] = 1;  // 範囲内
             }
 
-            validCount++;
-            visibilityMask[i] = 1;  // Visible
+            // Clamp to border (padding_mode='border')
+            u = Math.max(0, Math.min(mapSize - 1, u));
+            v = Math.max(0, Math.min(mapSize - 1, v));
 
             const x0 = Math.floor(u);
             const y0 = Math.floor(v);
@@ -252,8 +251,8 @@ export class ImageEncoder {
             }
         }
 
-        console.log(`[ImageEncoder] Projection sampling: ${validCount}/${vertexCount} vertices in bounds`);
-        console.log(`[ImageEncoder] ⚠️ Out of bounds vertices (zero features): ${outOfBoundsCount}`);
+        console.log(`[ImageEncoder] Projection sampling: ${inBoundsCount}/${vertexCount} vertices in bounds`);
+        console.log(`[ImageEncoder] ⚠️ Out of bounds vertices (border padding): ${outOfBoundsCount}`);
         return { features: output, visibilityMask };
     }
 
