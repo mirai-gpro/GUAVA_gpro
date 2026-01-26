@@ -5,7 +5,7 @@
  * StyleUNetのUNet部分を使用した軽量モデル
  *
  * 入力: 32ch Feature Map [1, 32, 512, 512] (値域 [0, 1] に正規化必須)
- * 出力: RGB画像 [1, 3, 512, 512] (sigmoid適用後 [0, 1])
+ * 出力: RGB画像 [1, 3, 512, 512] (クランプ [0, 1]、sigmoidなし)
  *
  * 使い方:
  *   const refiner = new RFDNRefiner();
@@ -165,36 +165,40 @@ export class RFDNRefiner {
 
       console.log('[NeuralRefiner] Output dims:', dims);
 
-      // CHW → HWC 変換 + sigmoid適用
+      // CHW → HWC 変換 (sigmoid不要 - Python版と同様にクランプのみ)
       const H = inputSize;
       const W = inputSize;
       const C = 3;
       const output = new Float32Array(H * W * C);
 
-      // sigmoid関数: 1 / (1 + exp(-x))
-      const sigmoid = (x: number): number => 1 / (1 + Math.exp(-x));
+      // 出力の統計を取得（デバッグ用）
+      let rawMin = Infinity, rawMax = -Infinity;
+      for (let i = 0; i < rawOutput.length; i++) {
+        if (rawOutput[i] < rawMin) rawMin = rawOutput[i];
+        if (rawOutput[i] > rawMax) rawMax = rawOutput[i];
+      }
+      console.log(`[NeuralRefiner] Raw output range: [${rawMin.toFixed(4)}, ${rawMax.toFixed(4)}]`);
 
       if (dims.length === 4 && dims[1] === 3) {
         // [1, 3, H, W] → [H, W, 3]
-        // SimpleUNetは生の値を出力するのでsigmoidを適用
+        // Python版と同様: sigmoidなし、クランプのみ
         for (let h = 0; h < H; h++) {
           for (let w = 0; w < W; w++) {
             for (let c = 0; c < C; c++) {
               const srcIdx = c * H * W + h * W + w;
               const dstIdx = h * W * C + w * C + c;
-              // sigmoid適用で[0, 1]範囲に変換
-              output[dstIdx] = sigmoid(rawOutput[srcIdx]);
+              output[dstIdx] = rawOutput[srcIdx];
             }
           }
         }
       } else {
-        // そのままコピー + sigmoid
+        // そのままコピー
         for (let i = 0; i < H * W * C; i++) {
-          output[i] = sigmoid(rawOutput[i]);
+          output[i] = rawOutput[i];
         }
       }
 
-      // sigmoid適用後は既に[0, 1]なのでクランプ不要だが念のため
+      // [0, 1] にクランプ (Python: torch.clamp(image, 0, 1))
       for (let i = 0; i < output.length; i++) {
         output[i] = Math.max(0, Math.min(1, output[i]));
       }
