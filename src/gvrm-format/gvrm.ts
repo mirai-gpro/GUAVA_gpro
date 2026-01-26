@@ -120,9 +120,9 @@ export class GVRM {
       useWebGPU: false  // WASM使用（安定性優先）
     });
     
-    console.log('[GVRM] Created (v80: Global Contrast Stretch 2026-01-26)');
+    console.log('[GVRM] Created (v81: Gamma Correction 2026-01-26)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
-    console.log('[GVRM] 🔧 BUILD v80 - Input [-1,1], Sigmoid, GLOBAL stretch (preserves color)');
+    console.log('[GVRM] 🔧 BUILD v81 - Added gamma correction (Linear → sRGB) for proper colors');
     console.log('[GVRM] ════════════════════════════════════════════════════');
   }
   
@@ -731,6 +731,36 @@ export class GVRM {
           }
         }
       }
+
+      // =============== v81: ガンマ補正とトーンマッピング ===============
+      // AIの出力(Linear空間)を、モニタ表示用(sRGB空間)に明るく補正
+      // これがないと、正しい色データでも「暗いグレー」に見えてしまう
+      const exposureBoost = 1.3;  // 露出補正（明るさブースト）
+      const gamma = 2.2;          // sRGB標準ガンマ
+
+      for (let i = 0; i < displayRGB.length; i++) {
+        let val = displayRGB[i];
+
+        // 1. 露出補正 (Exposure Boost): 全体を明るくする
+        val = val * exposureBoost;
+
+        // 2. ガンマ補正 (Linear → sRGB): 暗部を持ち上げ、本来の色味を引き出す
+        // 公式: val = val ^ (1 / gamma)
+        if (val > 0) {
+          val = Math.pow(val, 1.0 / gamma);
+        }
+
+        // クランプ [0, 1]
+        displayRGB[i] = Math.max(0, Math.min(1, val));
+      }
+
+      if (this.frameCount === 1) {
+        console.log('[GVRM] 🔧 v81: Applied gamma correction (Linear → sRGB)');
+        console.log(`[GVRM]   Exposure boost: ${exposureBoost}x, Gamma: ${gamma}`);
+        const finalStats = this.analyzeArray(displayRGB);
+        console.log(`[GVRM]   After gamma: [${finalStats.min.toFixed(4)}, ${finalStats.max.toFixed(4)}]`);
+      }
+      // =============================================================
 
       if (this.webglDisplay) {
         this.webglDisplay.display(displayRGB, this.frameCount);
