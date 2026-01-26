@@ -89,7 +89,7 @@ export class GVRM {
   private gsCoarseRenderer: GuavaWebGPURendererPractical | null = null;
   private gsComputeRenderer: GuavaWebGPURendererCompute | null = null;
   private useComputeRenderer: boolean = true;  // ← 32チャンネル完全保持のためCompute Rendererを使用
-  private debugBypassRFDN: boolean = true;  // DEBUG ON: Use sigmoid on first 3 channels (bypass broken SimpleUNet)
+  private debugBypassRFDN: boolean = false;  // SimpleUNet Refiner有効化
   private readbackBuffers: GPUBuffer[] = [];
   private coarseFeatureArray: Float32Array | null = null;
   
@@ -554,13 +554,21 @@ export class GVRM {
           }
         }
       } else {
-        // Neural Refiner (SimpleUNet): 32ch特徴マップをそのまま入力
-        // 正規化なしで試す（Python版の動作を確認する必要あり）
+        // Neural Refiner (SimpleUNet): 32ch特徴マップを[0,1]に正規化して入力
+        const stats = this.analyzeArray(coarseFeatures);
         if (this.frameCount === 1) {
-          const stats = this.analyzeArray(coarseFeatures);
-          console.log(`[GVRM] Coarse features (no normalization): [${stats.min.toFixed(4)}, ${stats.max.toFixed(4)}]`);
+          console.log(`[GVRM] Coarse features before normalization: [${stats.min.toFixed(4)}, ${stats.max.toFixed(4)}]`);
         }
-        displayRGB = await this.neuralRefiner.process(coarseFeatures);
+
+        // 全32チャンネルを[0, 1]に正規化
+        const normalizedFeatures = this.normalizeToZeroOne(coarseFeatures, this.frameCount === 1);
+
+        if (this.frameCount === 1) {
+          const normStats = this.analyzeArray(normalizedFeatures);
+          console.log(`[GVRM] Coarse features after normalization: [${normStats.min.toFixed(4)}, ${normStats.max.toFixed(4)}]`);
+        }
+
+        displayRGB = await this.neuralRefiner.process(normalizedFeatures);
       }
 
       if (this.webglDisplay) {
