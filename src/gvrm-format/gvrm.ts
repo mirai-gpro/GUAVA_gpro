@@ -110,9 +110,9 @@ export class GVRM {
     this.inverseTextureMapper = new InverseTextureMapper(512);
     this.uvDecoder = new UVDecoder();
     
-    // Neural Refiner: StyleUNet (709KB) or RFDN (178KB)
-    // StyleUNetはより高品質な出力が期待できる
-    const useStyleUNet = true;  // ← StyleUNetを使用
+    // Neural Refiner: RFDN (178KB distilled model)
+    // StyleUNet export is problematic, using RFDN for now
+    const useStyleUNet = false;  // ← RFDNを使用（StyleUNetエクスポート問題）
     this.neuralRefiner = new RFDNRefiner({
       modelPath: useStyleUNet ? '/assets/styleunet_refiner.onnx' : '/assets/rfdn_refiner.onnx',
       useWebGPU: false  // WASM使用（安定性優先）
