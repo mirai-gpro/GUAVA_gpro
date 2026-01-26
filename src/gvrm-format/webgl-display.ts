@@ -144,7 +144,7 @@ export class WebGLDisplay {
       return;
     }
 
-    // 統計を計算してヒストグラムストレッチング
+    // 統計を計算（デバッグ用）
     let min = Infinity, max = -Infinity;
     for (let i = 0; i < data.length; i++) {
       const v = data[i];
@@ -153,16 +153,27 @@ export class WebGLDisplay {
     }
     const range = max - min || 1;
 
-    // HWC → RGBA変換 + ヒストグラムストレッチング
+    // v79: ヒストグラムストレッチング無効化（Gemini推奨）
+    // Refiner出力は既に[0,1]のはずなので、ストレッチすると色差が消える
+    const useStretch = false;  // true: 従来のストレッチ, false: パススルー
+
+    // HWC → RGBA変換
     const pixels = new Float32Array(width * height * 4);
 
     for (let i = 0; i < width * height; i++) {
       const srcIdx = i * 3;
-      // ストレッチ: [min, max] → [0, 1]
-      pixels[i * 4 + 0] = (data[srcIdx + 0] - min) / range; // R
-      pixels[i * 4 + 1] = (data[srcIdx + 1] - min) / range; // G
-      pixels[i * 4 + 2] = (data[srcIdx + 2] - min) / range; // B
-      pixels[i * 4 + 3] = 1.0;                               // A
+      if (useStretch) {
+        // ストレッチ: [min, max] → [0, 1] (非推奨)
+        pixels[i * 4 + 0] = (data[srcIdx + 0] - min) / range;
+        pixels[i * 4 + 1] = (data[srcIdx + 1] - min) / range;
+        pixels[i * 4 + 2] = (data[srcIdx + 2] - min) / range;
+      } else {
+        // パススルー: そのまま表示（色差を保持）
+        pixels[i * 4 + 0] = Math.max(0, Math.min(1, data[srcIdx + 0]));
+        pixels[i * 4 + 1] = Math.max(0, Math.min(1, data[srcIdx + 1]));
+        pixels[i * 4 + 2] = Math.max(0, Math.min(1, data[srcIdx + 2]));
+      }
+      pixels[i * 4 + 3] = 1.0;  // A
     }
 
     // 初回フレームのみ統計情報を出力
@@ -172,7 +183,7 @@ export class WebGLDisplay {
         originalMax: max.toFixed(4),
         range: range.toFixed(4)
       });
-      console.log('[WebGLDisplay] Applied histogram stretching: [min, max] → [0, 1]');
+      console.log('[WebGLDisplay] 🔧 v79: Histogram stretching DISABLED (passthrough mode)');
 
       // ======== 🔍🔍🔍 RGB CROSS-CHANNEL ANALYSIS IN DISPLAY INPUT ========
       console.log('[WebGLDisplay] 🔍🔍🔍 Input RGB cross-channel analysis:');

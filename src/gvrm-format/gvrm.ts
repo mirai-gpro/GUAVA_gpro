@@ -120,9 +120,9 @@ export class GVRM {
       useWebGPU: false  // WASM使用（安定性優先）
     });
     
-    console.log('[GVRM] Created (v78: Refiner Sigmoid Fix 2026-01-26)');
+    console.log('[GVRM] Created (v79: Input [-1,1] + No Stretch 2026-01-26)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
-    console.log('[GVRM] 🔧 BUILD v78 - Refiner output uses sigmoid (not linear mapping)');
+    console.log('[GVRM] 🔧 BUILD v79 - Input to [-1,1], Sigmoid output, no display stretch');
     console.log('[GVRM] ════════════════════════════════════════════════════');
   }
   
@@ -1045,8 +1045,8 @@ export class GVRM {
   }
   
   /**
-   * Normalize 32-channel features to [0, 1] range for SimpleUNet
-   * SimpleUNet expects input in [0, 1] range (verified from training code)
+   * Normalize 32-channel features to [-1, 1] range for SimpleUNet
+   * v79: Changed from [0,1] to [-1,1] - most image generation networks expect zero-centered input
    */
   private normalizeToZeroOne(features: Float32Array, logStats: boolean = false): Float32Array {
     const normalized = new Float32Array(features.length);
@@ -1063,18 +1063,19 @@ export class GVRM {
 
     const range = max - min || 1;
 
-    // Normalize to [0, 1]
+    // Normalize to [-1, 1] (NOT [0, 1])
+    // Formula: normalized = ((v - min) / range) * 2.0 - 1.0
     for (let i = 0; i < features.length; i++) {
       const v = features[i];
       if (isFinite(v)) {
-        normalized[i] = (v - min) / range;
+        normalized[i] = ((v - min) / range) * 2.0 - 1.0;
       } else {
-        normalized[i] = 0;
+        normalized[i] = 0;  // center value for [-1, 1]
       }
     }
 
     if (logStats) {
-      console.log(`[GVRM] Normalizing features: [${min.toFixed(4)}, ${max.toFixed(4)}] → [0, 1]`);
+      console.log(`[GVRM] 🔧 v79: Normalizing features: [${min.toFixed(4)}, ${max.toFixed(4)}] → [-1, 1]`);
     }
 
     return normalized;
