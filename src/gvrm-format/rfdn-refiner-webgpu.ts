@@ -173,10 +173,13 @@ export class RFDNRefiner {
 
       if (dims.length === 4 && dims[1] === 3) {
         // [1, 3, H, W] → [H, W, 3]
+        // チャンネル順序を試す: RGB or BGR
+        const swapRB = true;  // ← RとBを入れ替えてみる
         for (let h = 0; h < H; h++) {
           for (let w = 0; w < W; w++) {
             for (let c = 0; c < C; c++) {
-              const srcIdx = c * H * W + h * W + w;
+              const srcC = swapRB ? (c === 0 ? 2 : c === 2 ? 0 : c) : c;
+              const srcIdx = srcC * H * W + h * W + w;
               const dstIdx = h * W * C + w * C + c;
               output[dstIdx] = rawOutput[srcIdx];
             }
