@@ -537,6 +537,21 @@ export class GVRM {
         if (this.frameCount === 1) {
           console.log('[GVRM] 🔧 DEBUG: Bypassing RFDN, using ch 0-2 directly (sigmoid already applied in decoder)');
           console.log(`[GVRM]   Raw ch 0-2 range: [${minVal.toFixed(4)}, ${maxVal.toFixed(4)}]`);
+
+          // 各チャンネル別の統計
+          for (let ch = 0; ch < 3; ch++) {
+            let chMin = Infinity, chMax = -Infinity, chSum = 0;
+            for (let p = 0; p < pixelCount; p++) {
+              const val = coarseFeatures[ch * pixelCount + p];
+              if (isFinite(val)) {
+                if (val < chMin) chMin = val;
+                if (val > chMax) chMax = val;
+                chSum += val;
+              }
+            }
+            const chName = ['R', 'G', 'B'][ch];
+            console.log(`[GVRM]   Ch ${ch} (${chName}): [${chMin.toFixed(4)}, ${chMax.toFixed(4)}], mean=${(chSum/pixelCount).toFixed(4)}`);
+          }
         }
       } else {
         // Neural Refiner (SimpleUNet): 32ch特徴マップをそのまま入力
