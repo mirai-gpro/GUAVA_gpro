@@ -16,6 +16,7 @@ import { WebGLDisplay } from './webgl-display';
 import { GuavaWebGPURendererPractical } from './guava-webgpu-renderer-practical';
 import { GuavaWebGPURendererCompute } from './guava-webgpu-renderer-compute';
 import { CameraUtils } from './camera-utils';
+import { loadUVTriangleMapping, type UVTriangleMapping } from './webgl-uv-rasterizer';
 
 interface GVRMConfig {
   templatePath?: string;
@@ -64,8 +65,12 @@ export class GVRM {
   private imagePath: string = '/assets/source.png';
   private cameraConfigPath: string = '/assets/source_camera.json';
   private uvCoordsPath: string = '/assets/uv_coords.bin';
+  private uvTriangleMappingPath: string = '/assets/uv_triangle_mapping.bin';
   private container: HTMLElement | null = null;
   private useWebGPURefiner: boolean = true;
+
+  // UV Pipeline data
+  private uvTriangleMapping: UVTriangleMapping | null = null;
   
   // Core modules
   private imageEncoder: ImageEncoder;
@@ -120,9 +125,9 @@ export class GVRM {
       useWebGPU: false  // WASM使用（安定性優先）
     });
     
-    console.log('[GVRM] Created (v81: Gamma Correction 2026-01-26)');
+    console.log('[GVRM] Created (v82: UV Pipeline Support 2026-01-26)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
-    console.log('[GVRM] 🔧 BUILD v81 - Added gamma correction (Linear → sRGB) for proper colors');
+    console.log('[GVRM] 🔧 BUILD v82 - Added UV Triangle Mapping loader for UV pipeline');
     console.log('[GVRM] ════════════════════════════════════════════════════');
   }
   
@@ -186,6 +191,15 @@ export class GVRM {
         console.log(`[GVRM]   ✅ UV coords loaded: ${this.uvCoords.length / 2} vertices`);
       } catch (e) {
         console.warn('[GVRM]   ⚠️ UV coords not found (template-only mode)');
+      }
+
+      // UV Triangle Mapping (for UV pipeline)
+      try {
+        this.uvTriangleMapping = await loadUVTriangleMapping(this.uvTriangleMappingPath);
+        console.log(`[GVRM]   ✅ UV Triangle Mapping loaded: ${this.uvTriangleMapping.numValid.toLocaleString()} valid pixels`);
+      } catch (e) {
+        console.warn('[GVRM]   ⚠️ UV Triangle Mapping not found (template-only mode)');
+        this.uvTriangleMapping = null;
       }
       
       // 4. Initialize modules
