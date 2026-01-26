@@ -503,7 +503,7 @@ export class GVRM {
 
       if (this.debugBypassRFDN) {
         // DEBUG: RFDNをバイパスして最初3チャンネルを直接RGBとして表示
-        // 方式: 線形マッピング (min-max normalization) で [0, 1] に変換
+        // Template Decoder で ch 0-2 に sigmoid を適用済みなので、そのまま使用
         const width = 512, height = 512;
         displayRGB = new Float32Array(width * height * 3);
         const pixelCount = width * height;
@@ -519,26 +519,24 @@ export class GVRM {
             }
           }
         }
-        const range = maxVal - minVal || 1;
 
-        // CHW → HWC変換 + 線形正規化
+        // CHW → HWC変換 (値はそのまま、[0, 1] 範囲のはず)
         for (let y = 0; y < height; y++) {
           for (let x = 0; x < width; x++) {
             const p = y * width + x;
             for (let c = 0; c < 3; c++) {
               const srcIdx = c * pixelCount + p;
               const dstIdx = p * 3 + c;
-              // 線形マッピング: [min, max] → [0, 1]
+              // クランプのみ（sigmoid適用済み）
               const val = coarseFeatures[srcIdx];
-              displayRGB[dstIdx] = (val - minVal) / range;
+              displayRGB[dstIdx] = Math.max(0, Math.min(1, val));
             }
           }
         }
 
         if (this.frameCount === 1) {
-          console.log('[GVRM] 🔧 DEBUG: Bypassing RFDN, linear mapping ch 0-2 to RGB');
+          console.log('[GVRM] 🔧 DEBUG: Bypassing RFDN, using ch 0-2 directly (sigmoid already applied in decoder)');
           console.log(`[GVRM]   Raw ch 0-2 range: [${minVal.toFixed(4)}, ${maxVal.toFixed(4)}]`);
-          console.log(`[GVRM]   Mapped to: [0, 1]`);
         }
       } else {
         // Neural Refiner (SimpleUNet): 32ch特徴マップをそのまま入力
