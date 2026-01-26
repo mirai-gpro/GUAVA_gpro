@@ -537,10 +537,13 @@ export class GVRM {
           console.log(`[GVRM]   Normalization: [${minVal.toFixed(4)}, ${maxVal.toFixed(4)}] → [0, 1]`);
         }
       } else {
-        // Neural Refiner (SimpleUNet): 32ch特徴マップを[0, 1]に正規化して入力
-        // SimpleUNetはトレーニング時に[0, 1]範囲の入力を期待している
-        const normalizedFeatures = this.normalizeToZeroOne(coarseFeatures, this.frameCount === 1);
-        displayRGB = await this.neuralRefiner.process(normalizedFeatures);
+        // Neural Refiner (SimpleUNet): 32ch特徴マップをそのまま入力
+        // 正規化なしで試す（Python版の動作を確認する必要あり）
+        if (this.frameCount === 1) {
+          const stats = this.analyzeArray(coarseFeatures);
+          console.log(`[GVRM] Coarse features (no normalization): [${stats.min.toFixed(4)}, ${stats.max.toFixed(4)}]`);
+        }
+        displayRGB = await this.neuralRefiner.process(coarseFeatures);
       }
 
       if (this.webglDisplay) {

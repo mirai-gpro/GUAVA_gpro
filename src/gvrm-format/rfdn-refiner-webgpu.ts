@@ -128,13 +128,13 @@ export class RFDNRefiner {
       }
     }
     
-    // 極端な値をクリップ（GPUハングを防ぐ）
+    // 極端な値をクリップ（GPUハングを防ぐ）- 閾値を緩和
     const absMax = Math.max(Math.abs(inputStats.min), Math.abs(inputStats.max));
-    if (absMax > 100) {
-      console.warn(`[NeuralRefiner] ⚠️ Extreme values detected (max=${absMax.toFixed(1)}), clipping to [-10, 10]`);
+    if (absMax > 1000) {
+      console.warn(`[NeuralRefiner] ⚠️ Extreme values detected (max=${absMax.toFixed(1)}), clipping to [-100, 100]`);
       for (let i = 0; i < featureMap.length; i++) {
-        if (featureMap[i] > 10) featureMap[i] = 10;
-        if (featureMap[i] < -10) featureMap[i] = -10;
+        if (featureMap[i] > 100) featureMap[i] = 100;
+        if (featureMap[i] < -100) featureMap[i] = -100;
       }
     }
 
