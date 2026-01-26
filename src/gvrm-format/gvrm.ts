@@ -120,7 +120,10 @@ export class GVRM {
       useWebGPU: false  // WASM使用（安定性優先）
     });
     
-    console.log('[GVRM] Created (v74: SimpleUNet Refiner)');
+    console.log('[GVRM] Created (v75: Color Debug Build 2026-01-26 16:00)');
+    console.log('[GVRM] ════════════════════════════════════════════════════');
+    console.log('[GVRM] 🔧 BUILD v75 - WebGPU binding limit fix + color debug');
+    console.log('[GVRM] ════════════════════════════════════════════════════');
   }
   
   async init(config?: GVRMConfig): Promise<void> {

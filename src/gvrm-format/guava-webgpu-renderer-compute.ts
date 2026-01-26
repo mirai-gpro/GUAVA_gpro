@@ -72,6 +72,9 @@ export class GuavaWebGPURendererCompute {
         this.indexArray = new Uint32Array(count);
         for (let i = 0; i < count; i++) this.indexArray[i] = i;
 
+        console.log('[ComputeRenderer] ═══════════════════════════════════════════');
+        console.log('[ComputeRenderer] 🔧 BUILD v75 - CPU splatting (no GPU compute)');
+        console.log('[ComputeRenderer] ═══════════════════════════════════════════');
         console.log('[ComputeRenderer] Constructor called with:');
         console.log(`  vertexCount: ${count}`);
         console.log(`  dimensions: ${this.width}x${this.height}`);
