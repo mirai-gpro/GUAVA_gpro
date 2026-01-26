@@ -144,42 +144,39 @@ export class WebGLDisplay {
       return;
     }
 
-    // HWC → RGBA変換（WebGLテクスチャ用）
+    // 統計を計算してヒストグラムストレッチング
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i < data.length; i++) {
+      const v = data[i];
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    const range = max - min || 1;
+
+    // HWC → RGBA変換 + ヒストグラムストレッチング
     const pixels = new Float32Array(width * height * 4);
 
     for (let i = 0; i < width * height; i++) {
       const srcIdx = i * 3;
-      pixels[i * 4 + 0] = data[srcIdx + 0]; // R
-      pixels[i * 4 + 1] = data[srcIdx + 1]; // G
-      pixels[i * 4 + 2] = data[srcIdx + 2]; // B
-      pixels[i * 4 + 3] = 1.0;              // A
+      // ストレッチ: [min, max] → [0, 1]
+      pixels[i * 4 + 0] = (data[srcIdx + 0] - min) / range; // R
+      pixels[i * 4 + 1] = (data[srcIdx + 1] - min) / range; // G
+      pixels[i * 4 + 2] = (data[srcIdx + 2] - min) / range; // B
+      pixels[i * 4 + 3] = 1.0;                               // A
     }
 
     // 初回フレームのみ統計情報を出力
     if (frameCount === 1) {
-      const sampleSize = Math.min(3000, width * height);
-      let min = Infinity, max = -Infinity, sum = 0;
-      for (let i = 0; i < sampleSize * 4; i++) {
-        if (i % 4 === 3) continue; // Alpha skip
-        const v = pixels[i];
-        if (v < min) min = v;
-        if (v > max) max = v;
-        sum += v;
-      }
-      const avg = sum / (sampleSize * 3);
-
       console.log('[WebGLDisplay] First frame stats:', {
-        min: min.toFixed(4),
-        max: max.toFixed(4),
-        avg: avg.toFixed(4)
+        originalMin: min.toFixed(4),
+        originalMax: max.toFixed(4),
+        range: range.toFixed(4)
       });
+      console.log('[WebGLDisplay] Applied histogram stretching: [min, max] → [0, 1]');
 
-      // 自動露出調整
-      if (max > 0.01) {
-        const autoExposure = 0.8 / max;
-        this.shaderMaterial.uniforms.uExposure.value = Math.min(autoExposure, 3.0);
-        console.log('[WebGLDisplay] Auto exposure:', this.shaderMaterial.uniforms.uExposure.value.toFixed(2));
-      }
+      // ストレッチ後は露出調整不要
+      this.shaderMaterial.uniforms.uExposure.value = 1.0;
+      this.shaderMaterial.uniforms.uContrast.value = 1.0;
     }
 
     // テクスチャ更新（GPU直接転送）
