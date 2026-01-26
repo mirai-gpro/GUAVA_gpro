@@ -90,6 +90,7 @@ export class GVRM {
   private gsComputeRenderer: GuavaWebGPURendererCompute | null = null;
   private useComputeRenderer: boolean = true;  // ← 32チャンネル完全保持のためCompute Rendererを使用
   private debugBypassRFDN: boolean = true;  // SimpleUNet出力が異常なのでバイパス
+  private debugInjectTestColors: boolean = false;  // テスト用: 虹色グラデーションを注入してレンダリング検証
   private readbackBuffers: GPUBuffer[] = [];
   private coarseFeatureArray: Float32Array | null = null;
   
@@ -333,7 +334,45 @@ export class GVRM {
       rotation: templateOutput.rotations,   // [N, 4]
       vertexCount: vertexCount
     };
-    
+
+    // ======== DEBUG: テストカラー注入 ========
+    // レンダリングパイプラインの検証用: 各頂点にY座標に基づく虹色を設定
+    // 色が正しく表示されれば、レンダリングパイプラインは正常
+    if (this.debugInjectTestColors) {
+      console.log('[GVRM] 🧪🧪🧪 DEBUG: Injecting TEST COLORS (rainbow gradient)');
+      const colors = this.templateGaussians.latents;
+      const positions = this.templateGaussians.positions;
+
+      // Y座標の範囲を取得
+      let minY = Infinity, maxY = -Infinity;
+      for (let i = 0; i < vertexCount; i++) {
+        const y = positions[i * 3 + 1];
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      const rangeY = maxY - minY || 1;
+
+      // 各頂点に虹色を設定（HSV色相をY座標で変化）
+      for (let i = 0; i < vertexCount; i++) {
+        const y = positions[i * 3 + 1];
+        const t = (y - minY) / rangeY;  // [0, 1]
+
+        // HSVからRGBへ変換（H = t, S = 1, V = 1）
+        const [r, g, b] = this.hsvToRgb(t, 1.0, 1.0);
+
+        const offset = i * 32;
+        colors[offset + 0] = r;  // R (values in [0,1])
+        colors[offset + 1] = g;  // G
+        colors[offset + 2] = b;  // B
+      }
+
+      console.log(`[GVRM]   Y range: [${minY.toFixed(2)}, ${maxY.toFixed(2)}]`);
+      console.log('[GVRM]   Applied rainbow gradient based on Y coordinate');
+      console.log('[GVRM]   If colors appear correctly → rendering pipeline is OK');
+      console.log('[GVRM]   If still gray → problem in rendering, not in colors');
+    }
+    // ======== END DEBUG ========
+
     console.log('[GVRM]   ✅ Template Gaussians generated (ONNX)');
     console.log(`[GVRM]      Count: ${vertexCount}`);
     console.log(`[GVRM]      Positions: [${vertexCount}, 3]`);
@@ -1010,6 +1049,31 @@ export class GVRM {
       if (Math.abs(v) > 0.001) nonZeros++;
     }
     return { min, max, mean: sum / arr.length, nonZeros };
+  }
+
+  /**
+   * HSV to RGB 変換（デバッグ用）
+   * @param h Hue [0, 1]
+   * @param s Saturation [0, 1]
+   * @param v Value [0, 1]
+   * @returns [r, g, b] each in [0, 1]
+   */
+  private hsvToRgb(h: number, s: number, v: number): [number, number, number] {
+    const i = Math.floor(h * 6);
+    const f = h * 6 - i;
+    const p = v * (1 - s);
+    const q = v * (1 - f * s);
+    const t = v * (1 - (1 - f) * s);
+
+    switch (i % 6) {
+      case 0: return [v, t, p];
+      case 1: return [q, v, p];
+      case 2: return [p, v, t];
+      case 3: return [p, q, v];
+      case 4: return [t, p, v];
+      case 5: return [v, p, q];
+      default: return [v, t, p];
+    }
   }
   
   /**
