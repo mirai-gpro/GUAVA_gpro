@@ -515,50 +515,12 @@ export class TemplateDecoderWebGPU {
   // ================================================================
 
   /**
-   * Compute harmonic embedding for a direction vector
-   * Python版 PyTorch3D HarmonicEmbedding 準拠
-   *
-   * PyTorch3D の順序:
-   *   - 最初に全周波数のsin: [sin(f1*x), sin(f1*y), sin(f1*z), sin(f2*x), ...]
-   *   - 次に全周波数のcos: [cos(f1*x), cos(f1*y), cos(f1*z), cos(f2*x), ...]
-   *
-   * @param dir 正規化された方向ベクトル [dx, dy, dz]
-   * @returns [24] = (4周波数 × 3次元) × 2(sin/cos)
-   */
-  private computeHarmonicEmbedding(dir: [number, number, number]): Float32Array {
-    const nHarmonic = 4;  // n_harmonic_dir = 4 (Python版と同じ)
-    const result = new Float32Array(nHarmonic * 2 * 3);  // 24
-
-    // PyTorch3D HarmonicEmbedding の順序に準拠:
-    // embed = (x[..., None] * frequencies).view(-1)  → [x*f1, x*f2, ..., y*f1, y*f2, ..., z*f1, ...]
-    // return cat((embed.sin(), embed.cos()), dim=-1)
-
-    // Part 1: All sines first
-    let idx = 0;
-    for (let dim = 0; dim < 3; dim++) {
-      for (let f = 0; f < nHarmonic; f++) {
-        const freq = Math.pow(2, f);  // [1, 2, 4, 8]
-        result[idx++] = Math.sin(freq * dir[dim]);
-      }
-    }
-
-    // Part 2: All cosines
-    for (let dim = 0; dim < 3; dim++) {
-      for (let f = 0; f < nHarmonic; f++) {
-        const freq = Math.pow(2, f);  // [1, 2, 4, 8]
-        result[idx++] = Math.cos(freq * dir[dim]);
-      }
-    }
-
-    return result;
-  }
-
-  /**
    * Compute view_dirs encoding (27 dimensions)
    *
-   * 構造:
-   *   - Harmonic Embedding: 4周波数 × 2(sin/cos) × 3軸 = 24次元
-   *   - Raw Direction: 3次元
+   * PyTorch3D HarmonicEmbedding (append_input=True) の順序:
+   *   - Raw Direction: 3次元 (最初!)
+   *   - Sin Embeddings: 4周波数 × 3軸 = 12次元
+   *   - Cos Embeddings: 4周波数 × 3軸 = 12次元
    *   - 合計: 27次元
    *
    * @param viewDir カメラ方向ベクトル (モデルからカメラへの方向、正規化済み)
@@ -566,17 +528,29 @@ export class TemplateDecoderWebGPU {
    */
   private computeViewDirs(viewDir: [number, number, number]): Float32Array {
     const result = new Float32Array(27);
+    const nHarmonic = 4;
 
-    // Harmonic embedding [24]
-    const harmonic = this.computeHarmonicEmbedding(viewDir);
-    for (let i = 0; i < 24; i++) {
-      result[i] = harmonic[i];
+    // Position 0-2: Raw direction FIRST (PyTorch3D append_input=True convention)
+    result[0] = viewDir[0];
+    result[1] = viewDir[1];
+    result[2] = viewDir[2];
+
+    // Position 3-14: Sin embeddings
+    let idx = 3;
+    for (let dim = 0; dim < 3; dim++) {
+      for (let f = 0; f < nHarmonic; f++) {
+        const freq = Math.pow(2, f);  // [1, 2, 4, 8]
+        result[idx++] = Math.sin(freq * viewDir[dim]);
+      }
     }
 
-    // Raw direction [3]
-    result[24] = viewDir[0];
-    result[25] = viewDir[1];
-    result[26] = viewDir[2];
+    // Position 15-26: Cos embeddings
+    for (let dim = 0; dim < 3; dim++) {
+      for (let f = 0; f < nHarmonic; f++) {
+        const freq = Math.pow(2, f);  // [1, 2, 4, 8]
+        result[idx++] = Math.cos(freq * viewDir[dim]);
+      }
+    }
 
     return result;
   }
