@@ -353,6 +353,16 @@ export class TemplateDecoderWebGPU {
     console.log(`[TemplateDecoderWebGPU]   View direction: (${viewDir[0].toFixed(3)}, ${viewDir[1].toFixed(3)}, ${viewDir[2].toFixed(3)})`);
     console.log(`[TemplateDecoderWebGPU]   📊 view_dirs[0..7]: [${Array.from(viewDirs27.slice(0, 8)).map(v => v.toFixed(4)).join(', ')}]`);
 
+    // 🔍 DEBUG: 全27要素を表示
+    console.log(`[TemplateDecoderWebGPU]   📊 view_dirs FULL 27 elements:`);
+    console.log(`[TemplateDecoderWebGPU]     [0-2] raw: [${viewDirs27[0].toFixed(4)}, ${viewDirs27[1].toFixed(4)}, ${viewDirs27[2].toFixed(4)}]`);
+    console.log(`[TemplateDecoderWebGPU]     [3-6] sin(x): [${Array.from(viewDirs27.slice(3, 7)).map(v => v.toFixed(4)).join(', ')}]`);
+    console.log(`[TemplateDecoderWebGPU]     [7-10] sin(y): [${Array.from(viewDirs27.slice(7, 11)).map(v => v.toFixed(4)).join(', ')}]`);
+    console.log(`[TemplateDecoderWebGPU]     [11-14] sin(z): [${Array.from(viewDirs27.slice(11, 15)).map(v => v.toFixed(4)).join(', ')}]`);
+    console.log(`[TemplateDecoderWebGPU]     [15-18] cos(x): [${Array.from(viewDirs27.slice(15, 19)).map(v => v.toFixed(4)).join(', ')}]`);
+    console.log(`[TemplateDecoderWebGPU]     [19-22] cos(y): [${Array.from(viewDirs27.slice(19, 23)).map(v => v.toFixed(4)).join(', ')}]`);
+    console.log(`[TemplateDecoderWebGPU]     [23-26] cos(z): [${Array.from(viewDirs27.slice(23, 27)).map(v => v.toFixed(4)).join(', ')}]`);
+
     const features_with_view = new Float32Array(N * 283);
     for (let i = 0; i < N; i++) {
       const srcOffset = i * 256;
@@ -425,6 +435,41 @@ export class TemplateDecoderWebGPU {
     for (let c = 0; c < 3; c++) {
       const chName = ['R', 'G', 'B'][c];
       console.log(`[TemplateDecoderWebGPU]   Ch ${c} (${chName}): [${postSigmoidMin[c].toFixed(4)}, ${postSigmoidMax[c].toFixed(4)}], mean=${(postSigmoidSum[c]/N).toFixed(4)}`);
+    }
+
+    // 🔍 DEBUG: 頂点別のカラーバリエーションを確認（最初10頂点 + 最後10頂点）
+    console.log(`[TemplateDecoderWebGPU] 🔍 Per-vertex RGB colors (post-sigmoid):`);
+    console.log(`[TemplateDecoderWebGPU]   First 10 vertices:`);
+    for (let i = 0; i < Math.min(10, N); i++) {
+      const offset = i * 32;
+      const r = colors[offset + 0].toFixed(3);
+      const g = colors[offset + 1].toFixed(3);
+      const b = colors[offset + 2].toFixed(3);
+      console.log(`[TemplateDecoderWebGPU]     v${i}: RGB(${r}, ${g}, ${b})`);
+    }
+    console.log(`[TemplateDecoderWebGPU]   Last 10 vertices (different body region):`);
+    for (let i = Math.max(0, N - 10); i < N; i++) {
+      const offset = i * 32;
+      const r = colors[offset + 0].toFixed(3);
+      const g = colors[offset + 1].toFixed(3);
+      const b = colors[offset + 2].toFixed(3);
+      console.log(`[TemplateDecoderWebGPU]     v${i}: RGB(${r}, ${g}, ${b})`);
+    }
+
+    // 🔍 DEBUG: カラーの分散を計算（同じ色ばかりか確認）
+    let colorVariance = [0, 0, 0];
+    for (let c = 0; c < 3; c++) {
+      const mean = postSigmoidSum[c] / N;
+      for (let i = 0; i < N; i++) {
+        const diff = colors[i * 32 + c] - mean;
+        colorVariance[c] += diff * diff;
+      }
+      colorVariance[c] = Math.sqrt(colorVariance[c] / N);
+    }
+    console.log(`[TemplateDecoderWebGPU] 🔍 Color standard deviation:`);
+    console.log(`[TemplateDecoderWebGPU]   R: σ=${colorVariance[0].toFixed(4)}, G: σ=${colorVariance[1].toFixed(4)}, B: σ=${colorVariance[2].toFixed(4)}`);
+    if (colorVariance[0] < 0.1 && colorVariance[1] < 0.1 && colorVariance[2] < 0.1) {
+      console.log(`[TemplateDecoderWebGPU] ⚠️ WARNING: Very low color variance! All vertices have similar colors.`);
     }
     
     // Opacity: 283→128→1 + sigmoid
