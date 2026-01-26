@@ -120,9 +120,9 @@ export class GVRM {
       useWebGPU: false  // WASM使用（安定性優先）
     });
     
-    console.log('[GVRM] Created (v75: Color Debug Build 2026-01-26 16:00)');
+    console.log('[GVRM] Created (v76: Global Contrast Fix 2026-01-26)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
-    console.log('[GVRM] 🔧 BUILD v75 - WebGPU binding limit fix + color debug');
+    console.log('[GVRM] 🔧 BUILD v76 - Fixed per-channel → global contrast');
     console.log('[GVRM] ════════════════════════════════════════════════════');
   }
   
@@ -551,7 +551,9 @@ export class GVRM {
         displayRGB = new Float32Array(width * height * 3);
         const pixelCount = width * height;
 
-        // まず最初3チャンネルの統計を取得（チャンネル別）
+        // 🔧 FIX v76: GLOBAL min/max across ALL 3 channels (preserves color differences)
+        // Per-channel stretching was destroying color info by normalizing each channel independently
+        let globalMin = Infinity, globalMax = -Infinity;
         const chStats = [];
         for (let ch = 0; ch < 3; ch++) {
           let chMin = Infinity, chMax = -Infinity, chSum = 0, count = 0;
@@ -562,13 +564,17 @@ export class GVRM {
               if (val > chMax) chMax = val;
               chSum += val;
               count++;
+              // Track global min/max
+              if (val < globalMin) globalMin = val;
+              if (val > globalMax) globalMax = val;
             }
           }
           chStats.push({ min: chMin, max: chMax, mean: count > 0 ? chSum / count : 0.5, count });
         }
 
-        // CHW → HWC変換 + チャンネル別コントラスト強調
-        // 各チャンネルの[min, max]を[0.1, 0.9]にストレッチ（飽和を防ぐ）
+        const globalRange = globalMax - globalMin;
+
+        // CHW → HWC変換 + GLOBAL コントラスト強調（色差を保持）
         for (let y = 0; y < height; y++) {
           for (let x = 0; x < width; x++) {
             const p = y * width + x;
@@ -583,15 +589,13 @@ export class GVRM {
                 continue;
               }
 
-              // チャンネル別のコントラストストレッチ
-              const range = chStats[c].max - chStats[c].min;
-              if (range > 0.01) {
-                // [min, max] → [0, 1]（フルレンジ）
-                val = (val - chStats[c].min) / range;
+              // 🔧 GLOBAL contrast stretch (same scale for all channels → preserves color!)
+              if (globalRange > 0.01) {
+                val = (val - globalMin) / globalRange;
               }
 
-              // より強いガンマ補正（明るさ調整）- γ=0.5 で大幅に明るく
-              val = Math.pow(val, 0.5);
+              // ガンマ補正（明るさ調整）- γ=0.6 で明るく（0.5は強すぎた）
+              val = Math.pow(val, 0.6);
 
               displayRGB[dstIdx] = Math.max(0, Math.min(1, val));
             }
@@ -599,13 +603,15 @@ export class GVRM {
         }
 
         if (this.frameCount === 1) {
-          console.log('[GVRM] 🔧 DEBUG: Bypassing RFDN, using ch 0-2 with contrast enhancement');
-          console.log(`[GVRM]   Raw ch 0-2 stats (excluding background):`);
+          console.log('[GVRM] 🔧 DEBUG: Bypassing RFDN, using ch 0-2 with GLOBAL contrast');
+          console.log(`[GVRM]   🔧 FIX v76: Using GLOBAL min/max to preserve color differences`);
+          console.log(`[GVRM]   Global range: [${globalMin.toFixed(4)}, ${globalMax.toFixed(4)}]`);
+          console.log(`[GVRM]   Per-channel stats (for reference):`);
           for (let ch = 0; ch < 3; ch++) {
             const chName = ['R', 'G', 'B'][ch];
             console.log(`[GVRM]   Ch ${ch} (${chName}): [${chStats[ch].min.toFixed(4)}, ${chStats[ch].max.toFixed(4)}], mean=${chStats[ch].mean.toFixed(4)}, pixels=${chStats[ch].count}`);
           }
-          console.log('[GVRM]   Applied: per-channel contrast stretch [min,max]→[0,1] + gamma=0.5 (aggressive brightness)');
+          console.log('[GVRM]   Applied: GLOBAL contrast stretch [globalMin,globalMax]→[0,1] + gamma=0.6');
 
           // ======== 🔍🔍🔍 RGB CROSS-CHANNEL ANALYSIS ========
           // Check if R≈G≈B (causes gray output)
