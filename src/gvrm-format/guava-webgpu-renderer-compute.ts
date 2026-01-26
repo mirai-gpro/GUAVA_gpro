@@ -126,7 +126,7 @@ export class GuavaWebGPURendererCompute {
         for (let i = 0; i < 8; i++) {
             const buffer = this.device.createBuffer({
                 size: bufferSize,
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
             });
             this.outputBuffers.push(buffer);
         }
@@ -258,10 +258,13 @@ export class GuavaWebGPURendererCompute {
         const positions = this.gaussianData.positions;
         const count = this.gaussianData.vertexCount;
         const viewMatrix = this.cameraConfig.viewMatrix;
-        const projMatrix = this.cameraConfig.projMatrix;
 
         // Clear sorted list
         this.sortedGaussians = [];
+
+        // 公式実装に合わせた投影 (image-encoder.ts と同じ方式)
+        // tanfov = 1/24, canonical camera at (0, 0.6, 22)
+        const invTanFov = 24.0;
 
         // Project Gaussians to screen space and compute depth
         for (let i = 0; i < count; i++) {
@@ -269,36 +272,32 @@ export class GuavaWebGPURendererCompute {
             const py = positions[i * 3 + 1];
             const pz = positions[i * 3 + 2];
 
-            // Transform to view space
-            const vx = viewMatrix[0]*px + viewMatrix[4]*py + viewMatrix[8]*pz + viewMatrix[12];
-            const vy = viewMatrix[1]*px + viewMatrix[5]*py + viewMatrix[9]*pz + viewMatrix[13];
-            const vz = viewMatrix[2]*px + viewMatrix[6]*py + viewMatrix[10]*pz + viewMatrix[14];
+            // Transform to view space (same as image-encoder.ts)
+            // View matrix is identity rotation + translation (0, 0.6, 22)
+            const vx = px + viewMatrix[12];  // px + 0
+            const vy = py + viewMatrix[13];  // py + 0.6
+            const vz = pz + viewMatrix[14];  // pz + 22
 
-            // Transform to clip space
-            const cx = projMatrix[0]*vx + projMatrix[4]*vy + projMatrix[8]*vz + projMatrix[12];
-            const cy = projMatrix[1]*vx + projMatrix[5]*vy + projMatrix[9]*vz + projMatrix[13];
-            const cw = projMatrix[3]*vx + projMatrix[7]*vy + projMatrix[11]*vz + projMatrix[15];
+            // Skip if behind camera (vz should be positive for visible objects)
+            if (vz <= 0.1) continue;
 
-            if (cw <= 0.001) continue; // Behind camera
+            // Perspective projection (same formula as image-encoder.ts)
+            const imgX = (vx * invTanFov) / vz;
+            const imgY = (vy * invTanFov) / vz;
 
-            // NDC coordinates
-            const ndcX = cx / cw;
-            const ndcY = cy / cw;
-
-            // Screen coordinates
-            const screenX = (ndcX * 0.5 + 0.5) * this.width;
-            const screenY = (1.0 - (ndcY * 0.5 + 0.5)) * this.height;
+            // Convert from NDC [-1, 1] to screen [0, width/height]
+            const screenX = (imgX + 1.0) * this.width * 0.5;
+            const screenY = (1.0 - imgY) * this.height * 0.5;  // Y軸反転
 
             // Compute screen radius based on scale and distance
             const scale = this.gaussianData.scale;
             const maxScale = Math.max(scale[i*3+0], scale[i*3+1], scale[i*3+2]);
-            const dist = Math.abs(vz);
-            const focal = 24.0;
-            const screenRadius = maxScale * focal / Math.max(dist, 0.1) * this.width * 0.5;
+            const screenRadius = maxScale * invTanFov / vz * this.width * 0.5;
 
-            // Only include Gaussians that might be visible
-            if (screenX + screenRadius < 0 || screenX - screenRadius > this.width) continue;
-            if (screenY + screenRadius < 0 || screenY - screenRadius > this.height) continue;
+            // Only include Gaussians that might be visible (with generous margin)
+            const margin = screenRadius * 3;  // 3σ for Gaussian
+            if (screenX + margin < 0 || screenX - margin > this.width) continue;
+            if (screenY + margin < 0 || screenY - margin > this.height) continue;
 
             this.sortedGaussians.push({
                 index: i,
@@ -319,7 +318,9 @@ export class GuavaWebGPURendererCompute {
             console.log(`  Visible after culling: ${this.sortedGaussians.length}`);
             if (this.sortedGaussians.length > 0) {
                 const first = this.sortedGaussians[0];
+                const last = this.sortedGaussians[this.sortedGaussians.length - 1];
                 console.log(`  First (back): idx=${first.index}, depth=${first.depth.toFixed(4)}, screen=(${first.screenX.toFixed(1)}, ${first.screenY.toFixed(1)}), radius=${first.screenRadius.toFixed(2)}`);
+                console.log(`  Last (front): idx=${last.index}, depth=${last.depth.toFixed(4)}, screen=(${last.screenX.toFixed(1)}, ${last.screenY.toFixed(1)}), radius=${last.screenRadius.toFixed(2)}`);
             }
         }
     }
