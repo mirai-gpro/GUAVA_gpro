@@ -89,7 +89,7 @@ export class GVRM {
   private gsCoarseRenderer: GuavaWebGPURendererPractical | null = null;
   private gsComputeRenderer: GuavaWebGPURendererCompute | null = null;
   private useComputeRenderer: boolean = true;  // ← 32チャンネル完全保持のためCompute Rendererを使用
-  private debugBypassRFDN: boolean = false;  // SimpleUNet Refiner有効化
+  private debugBypassRFDN: boolean = true;  // SimpleUNet出力が異常なのでバイパス
   private readbackBuffers: GPUBuffer[] = [];
   private coarseFeatureArray: Float32Array | null = null;
   
@@ -503,55 +503,67 @@ export class GVRM {
 
       if (this.debugBypassRFDN) {
         // DEBUG: RFDNをバイパスして最初3チャンネルを直接RGBとして表示
-        // Template Decoder で ch 0-2 に sigmoid を適用済みなので、そのまま使用
+        // Template Decoder で ch 0-2 に sigmoid を適用済み
+        // 強化されたコントラスト補正を適用
         const width = 512, height = 512;
         displayRGB = new Float32Array(width * height * 3);
         const pixelCount = width * height;
 
-        // まず最初3チャンネルの統計を取得
-        let minVal = Infinity, maxVal = -Infinity;
+        // まず最初3チャンネルの統計を取得（チャンネル別）
+        const chStats = [];
         for (let ch = 0; ch < 3; ch++) {
+          let chMin = Infinity, chMax = -Infinity, chSum = 0, count = 0;
           for (let p = 0; p < pixelCount; p++) {
             const val = coarseFeatures[ch * pixelCount + p];
-            if (isFinite(val)) {
-              if (val < minVal) minVal = val;
-              if (val > maxVal) maxVal = val;
+            if (isFinite(val) && val > 0.001) {  // 背景(0)を除外
+              if (val < chMin) chMin = val;
+              if (val > chMax) chMax = val;
+              chSum += val;
+              count++;
             }
           }
+          chStats.push({ min: chMin, max: chMax, mean: count > 0 ? chSum / count : 0.5, count });
         }
 
-        // CHW → HWC変換 (値はそのまま、[0, 1] 範囲のはず)
+        // CHW → HWC変換 + チャンネル別コントラスト強調
+        // 各チャンネルの[min, max]を[0.1, 0.9]にストレッチ（飽和を防ぐ）
         for (let y = 0; y < height; y++) {
           for (let x = 0; x < width; x++) {
             const p = y * width + x;
             for (let c = 0; c < 3; c++) {
               const srcIdx = c * pixelCount + p;
               const dstIdx = p * 3 + c;
-              // クランプのみ（sigmoid適用済み）
-              const val = coarseFeatures[srcIdx];
+              let val = coarseFeatures[srcIdx];
+
+              // 背景（0付近）はそのまま
+              if (val < 0.001) {
+                displayRGB[dstIdx] = 0;
+                continue;
+              }
+
+              // チャンネル別のコントラストストレッチ
+              const range = chStats[c].max - chStats[c].min;
+              if (range > 0.01) {
+                // [min, max] → [0.1, 0.9]
+                val = 0.1 + 0.8 * (val - chStats[c].min) / range;
+              }
+
+              // ガンマ補正（明るさ調整）- γ=0.8 でやや明るく
+              val = Math.pow(val, 0.8);
+
               displayRGB[dstIdx] = Math.max(0, Math.min(1, val));
             }
           }
         }
 
         if (this.frameCount === 1) {
-          console.log('[GVRM] 🔧 DEBUG: Bypassing RFDN, using ch 0-2 directly (sigmoid already applied in decoder)');
-          console.log(`[GVRM]   Raw ch 0-2 range: [${minVal.toFixed(4)}, ${maxVal.toFixed(4)}]`);
-
-          // 各チャンネル別の統計
+          console.log('[GVRM] 🔧 DEBUG: Bypassing RFDN, using ch 0-2 with contrast enhancement');
+          console.log(`[GVRM]   Raw ch 0-2 stats (excluding background):`);
           for (let ch = 0; ch < 3; ch++) {
-            let chMin = Infinity, chMax = -Infinity, chSum = 0;
-            for (let p = 0; p < pixelCount; p++) {
-              const val = coarseFeatures[ch * pixelCount + p];
-              if (isFinite(val)) {
-                if (val < chMin) chMin = val;
-                if (val > chMax) chMax = val;
-                chSum += val;
-              }
-            }
             const chName = ['R', 'G', 'B'][ch];
-            console.log(`[GVRM]   Ch ${ch} (${chName}): [${chMin.toFixed(4)}, ${chMax.toFixed(4)}], mean=${(chSum/pixelCount).toFixed(4)}`);
+            console.log(`[GVRM]   Ch ${ch} (${chName}): [${chStats[ch].min.toFixed(4)}, ${chStats[ch].max.toFixed(4)}], mean=${chStats[ch].mean.toFixed(4)}, pixels=${chStats[ch].count}`);
           }
+          console.log('[GVRM]   Applied: per-channel contrast stretch [min,max]→[0.1,0.9] + gamma=0.8');
         }
       } else {
         // Neural Refiner (SimpleUNet): 32ch特徴マップを[0,1]に正規化して入力
