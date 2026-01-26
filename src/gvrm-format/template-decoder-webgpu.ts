@@ -15,6 +15,7 @@ export interface TemplateDecoderInput {
   projection_features: Float32Array;   // [N, 128]
   global_embedding: Float32Array;      // [768]
   num_vertices: number;
+  viewDirection?: [number, number, number];  // カメラ方向 (正規化済み) デフォルト: (0, 0, 1) = 正面
 }
 
 export interface TemplateDecoderOutput {
@@ -311,18 +312,28 @@ export class TemplateDecoderWebGPU {
 
     // ================================================================
     // Step 5: Concatenate with view_dirs (256 + 27 = 283)
-    // view_dirs is all zeros for now
+    // view_dirs = Harmonic Embedding (24) + Raw Direction (3) = 27
     // ================================================================
+
+    // デフォルト: 正面からのビュー (0, 0, 1) = モデルからカメラへの方向
+    // カメラは Z=22 にあるので、モデル(原点付近)からカメラへの方向は (0, 0, 1)
+    const viewDir: [number, number, number] = input.viewDirection ?? [0, 0, 1];
+    const viewDirs27 = this.computeViewDirs(viewDir);
+
+    console.log(`[TemplateDecoderWebGPU]   View direction: (${viewDir[0].toFixed(3)}, ${viewDir[1].toFixed(3)}, ${viewDir[2].toFixed(3)})`);
+    console.log(`[TemplateDecoderWebGPU]   📊 view_dirs[0..7]: [${Array.from(viewDirs27.slice(0, 8)).map(v => v.toFixed(4)).join(', ')}]`);
+
     const features_with_view = new Float32Array(N * 283);
     for (let i = 0; i < N; i++) {
       const srcOffset = i * 256;
       const dstOffset = i * 283;
+      // Feature part [256]
       for (let j = 0; j < 256; j++) {
         features_with_view[dstOffset + j] = features[srcOffset + j];
       }
-      // view_dirs [27] = 0
+      // view_dirs [27] (全頂点で同じ - 正面ビューでは全Gaussianが同じカメラ方向を見る)
       for (let j = 0; j < 27; j++) {
-        features_with_view[dstOffset + 256 + j] = 0;
+        features_with_view[dstOffset + 256 + j] = viewDirs27[j];
       }
     }
 
@@ -496,6 +507,64 @@ export class TemplateDecoderWebGPU {
       sum += arr[i];
     }
     return { min, max, mean: sum / arr.length };
+  }
+
+  // ================================================================
+  // View Direction Encoding (Harmonic Embedding)
+  // Python版 ubody_gaussian.py 準拠: n_harmonic_dir = 4, direnc_dim = 27
+  // ================================================================
+
+  /**
+   * Compute harmonic embedding for a direction vector
+   * Python版 HarmonicEmbedding 準拠
+   *
+   * @param dir 正規化された方向ベクトル [dx, dy, dz]
+   * @returns [24] = 4周波数 × 2(sin/cos) × 3次元
+   */
+  private computeHarmonicEmbedding(dir: [number, number, number]): Float32Array {
+    const nHarmonic = 4;  // n_harmonic_dir = 4 (Python版と同じ)
+    const result = new Float32Array(nHarmonic * 2 * 3);  // 24
+
+    let idx = 0;
+    // Python版 HarmonicEmbedding: frequencies = [2^0, 2^1, 2^2, 2^3] = [1, 2, 4, 8]
+    for (let f = 0; f < nHarmonic; f++) {
+      const freq = Math.pow(2, f);  // [1, 2, 4, 8]
+      for (let dim = 0; dim < 3; dim++) {
+        // PyTorch3D convention: sin first, then cos
+        result[idx++] = Math.sin(freq * dir[dim]);
+        result[idx++] = Math.cos(freq * dir[dim]);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Compute view_dirs encoding (27 dimensions)
+   *
+   * 構造:
+   *   - Harmonic Embedding: 4周波数 × 2(sin/cos) × 3軸 = 24次元
+   *   - Raw Direction: 3次元
+   *   - 合計: 27次元
+   *
+   * @param viewDir カメラ方向ベクトル (モデルからカメラへの方向、正規化済み)
+   * @returns Float32Array[27]
+   */
+  private computeViewDirs(viewDir: [number, number, number]): Float32Array {
+    const result = new Float32Array(27);
+
+    // Harmonic embedding [24]
+    const harmonic = this.computeHarmonicEmbedding(viewDir);
+    for (let i = 0; i < 24; i++) {
+      result[i] = harmonic[i];
+    }
+
+    // Raw direction [3]
+    result[24] = viewDir[0];
+    result[25] = viewDir[1];
+    result[26] = viewDir[2];
+
+    return result;
   }
 
   /**
