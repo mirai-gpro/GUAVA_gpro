@@ -264,6 +264,16 @@ export class TemplateDecoderWebGPU {
     console.log(`[TemplateDecoderWebGPU]   Base features: ${N} x 128 ✅`);
     console.log(`[TemplateDecoderWebGPU]   📊 base_features stats: min=${baseStats.min.toFixed(4)}, max=${baseStats.max.toFixed(4)}, unique=${baseStats.unique}`);
 
+    // 🔍 DEBUG: base_features が全てゼロでないことを確認
+    let baseNonZeroCount = 0;
+    for (let i = 0; i < base_features.length; i++) {
+      if (Math.abs(base_features[i]) > 0.0001) baseNonZeroCount++;
+    }
+    console.log(`[TemplateDecoderWebGPU]   📊 base_features non-zeros: ${baseNonZeroCount}/${base_features.length} (${(baseNonZeroCount/base_features.length*100).toFixed(1)}%)`);
+    if (baseNonZeroCount === 0) {
+      console.error(`[TemplateDecoderWebGPU] ❌ ERROR: base_features is ALL ZEROS!`);
+    }
+
     // ================================================================
     // Step 3: Concatenate features for each vertex
     // fused = [projection[128], base[128], global[256]] = [512]
@@ -291,6 +301,26 @@ export class TemplateDecoderWebGPU {
     console.log(`[TemplateDecoderWebGPU]   Fused features: ${N} x 512 ✅`);
     console.log(`[TemplateDecoderWebGPU]   📊 fused stats: min=${fusedStats.min.toFixed(4)}, max=${fusedStats.max.toFixed(4)}, unique=${fusedStats.unique}`);
     console.log(`[TemplateDecoderWebGPU]   📊 fused[0..7] (vertex 0): [${Array.from(fused.slice(0, 8)).map(v => v.toFixed(3)).join(', ')}]`);
+
+    // 🔍 DEBUG: fused特徴量の各部分の寄与を確認
+    let projPart = fused.slice(0, 128);
+    let basePart = fused.slice(128, 256);
+    let globalPart = fused.slice(256, 512);
+    let projMag = 0, baseMag = 0, globalMag = 0;
+    for (let j = 0; j < 128; j++) {
+      projMag += Math.abs(projPart[j]);
+      baseMag += Math.abs(basePart[j]);
+    }
+    for (let j = 0; j < 256; j++) {
+      globalMag += Math.abs(globalPart[j]);
+    }
+    console.log(`[TemplateDecoderWebGPU]   📊 Fused contribution (vertex 0):`);
+    console.log(`[TemplateDecoderWebGPU]     projection[0:128]: L1 norm = ${projMag.toFixed(4)}`);
+    console.log(`[TemplateDecoderWebGPU]     base[128:256]:     L1 norm = ${baseMag.toFixed(4)}`);
+    console.log(`[TemplateDecoderWebGPU]     global[256:512]:   L1 norm = ${globalMag.toFixed(4)}`);
+    if (projMag < 1.0) {
+      console.log(`[TemplateDecoderWebGPU]   ⚠️ WARNING: projection_features contribution is very small (${projMag.toFixed(4)})`);
+    }
 
     // ================================================================
     // Step 4: Feature layers (512→256→256→256→256)
@@ -346,12 +376,55 @@ export class TemplateDecoderWebGPU {
     let rgb_hidden = this.batchLinearRelu(features_with_view, weights.color_0_weight, weights.color_0_bias, N, 283, 128);
     const colors = this.batchLinear(rgb_hidden, weights.color_2_weight, weights.color_2_bias, N, 128, 32);
 
+    // 🔍 DEBUG: sigmoid適用前のch 0-2の値を確認
+    let preSigmoidMin = [Infinity, Infinity, Infinity];
+    let preSigmoidMax = [-Infinity, -Infinity, -Infinity];
+    let preSigmoidSum = [0, 0, 0];
+    for (let i = 0; i < N; i++) {
+      const offset = i * 32;
+      for (let c = 0; c < 3; c++) {
+        const val = colors[offset + c];
+        if (val < preSigmoidMin[c]) preSigmoidMin[c] = val;
+        if (val > preSigmoidMax[c]) preSigmoidMax[c] = val;
+        preSigmoidSum[c] += val;
+      }
+    }
+    console.log(`[TemplateDecoderWebGPU] 🔍 PRE-SIGMOID color ch 0-2:`);
+    for (let c = 0; c < 3; c++) {
+      const chName = ['R', 'G', 'B'][c];
+      console.log(`[TemplateDecoderWebGPU]   Ch ${c} (${chName}): [${preSigmoidMin[c].toFixed(4)}, ${preSigmoidMax[c].toFixed(4)}], mean=${(preSigmoidSum[c]/N).toFixed(4)}`);
+    }
+    // Sigmoid(0) = 0.5 なので、mean が 0 に近い場合は問題
+    const avgMean = (preSigmoidSum[0] + preSigmoidSum[1] + preSigmoidSum[2]) / (N * 3);
+    if (Math.abs(avgMean) < 0.5) {
+      console.log(`[TemplateDecoderWebGPU] ⚠️ WARNING: Pre-sigmoid mean is near 0 (${avgMean.toFixed(4)}) → sigmoid will output ~0.5 (GRAY)`);
+    }
+
     // Apply sigmoid to first 3 channels (RGB) - Python版と同じ
     for (let i = 0; i < N; i++) {
       const offset = i * 32;
       for (let c = 0; c < 3; c++) {
         colors[offset + c] = 1 / (1 + Math.exp(-colors[offset + c]));
       }
+    }
+
+    // 🔍 DEBUG: sigmoid適用後のch 0-2の値を確認
+    let postSigmoidMin = [Infinity, Infinity, Infinity];
+    let postSigmoidMax = [-Infinity, -Infinity, -Infinity];
+    let postSigmoidSum = [0, 0, 0];
+    for (let i = 0; i < N; i++) {
+      const offset = i * 32;
+      for (let c = 0; c < 3; c++) {
+        const val = colors[offset + c];
+        if (val < postSigmoidMin[c]) postSigmoidMin[c] = val;
+        if (val > postSigmoidMax[c]) postSigmoidMax[c] = val;
+        postSigmoidSum[c] += val;
+      }
+    }
+    console.log(`[TemplateDecoderWebGPU] 🔍 POST-SIGMOID color ch 0-2:`);
+    for (let c = 0; c < 3; c++) {
+      const chName = ['R', 'G', 'B'][c];
+      console.log(`[TemplateDecoderWebGPU]   Ch ${c} (${chName}): [${postSigmoidMin[c].toFixed(4)}, ${postSigmoidMax[c].toFixed(4)}], mean=${(postSigmoidSum[c]/N).toFixed(4)}`);
     }
     
     // Opacity: 283→128→1 + sigmoid

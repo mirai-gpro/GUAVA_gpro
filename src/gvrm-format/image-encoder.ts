@@ -191,6 +191,13 @@ export class ImageEncoder {
         let inBoundsCount = 0;
         let outOfBoundsCount = 0;
 
+        // 🔍 DEBUG: UV座標の統計を収集
+        let uvMinX = Infinity, uvMaxX = -Infinity;
+        let uvMinY = Infinity, uvMaxY = -Infinity;
+        let ndcMinX = Infinity, ndcMaxX = -Infinity;
+        let ndcMinY = Infinity, ndcMaxY = -Infinity;
+        const sampleUVs: {u: number, v: number, idx: number}[] = [];
+
         for (let i = 0; i < vertexCount; i++) {
             const vx = vertices[i * 3 + 0];
             const vy = vertices[i * 3 + 1];
@@ -209,6 +216,21 @@ export class ImageEncoder {
             // Grid sample (align_corners=False)
             let u = ((imgX + 1.0) * mapSize - 1.0) / 2.0;
             let v = ((imgY + 1.0) * mapSize - 1.0) / 2.0;
+
+            // 🔍 DEBUG: UV座標とNDC座標を記録
+            if (u < uvMinX) uvMinX = u;
+            if (u > uvMaxX) uvMaxX = u;
+            if (v < uvMinY) uvMinY = v;
+            if (v > uvMaxY) uvMaxY = v;
+            if (imgX < ndcMinX) ndcMinX = imgX;
+            if (imgX > ndcMaxX) ndcMaxX = imgX;
+            if (imgY < ndcMinY) ndcMinY = imgY;
+            if (imgY > ndcMaxY) ndcMaxY = imgY;
+
+            // 最初の10頂点をサンプルとして保存
+            if (sampleUVs.length < 10) {
+                sampleUVs.push({u, v, idx: i});
+            }
 
             // padding_mode='border': 範囲外は端にクランプ（Python参照と同じ）
             const wasOutOfBounds = u < 0 || u > mapSize - 1 || v < 0 || v > mapSize - 1;
@@ -253,6 +275,32 @@ export class ImageEncoder {
 
         console.log(`[ImageEncoder] Projection sampling: ${inBoundsCount}/${vertexCount} vertices in bounds`);
         console.log(`[ImageEncoder] ⚠️ Out of bounds vertices (border padding): ${outOfBoundsCount}`);
+
+        // 🔍 DEBUG: UV座標の統計を出力
+        console.log(`[ImageEncoder] 🔍🔍🔍 UV COORDINATE DEBUG:`);
+        console.log(`[ImageEncoder]   Map size: ${mapSize}x${mapSize}`);
+        console.log(`[ImageEncoder]   Valid UV range: [0, ${mapSize - 1}]`);
+        console.log(`[ImageEncoder]   Actual UV X range: [${uvMinX.toFixed(2)}, ${uvMaxX.toFixed(2)}]`);
+        console.log(`[ImageEncoder]   Actual UV Y range: [${uvMinY.toFixed(2)}, ${uvMaxY.toFixed(2)}]`);
+        console.log(`[ImageEncoder]   NDC X range: [${ndcMinX.toFixed(4)}, ${ndcMaxX.toFixed(4)}] (should be [-1, 1])`);
+        console.log(`[ImageEncoder]   NDC Y range: [${ndcMinY.toFixed(4)}, ${ndcMaxY.toFixed(4)}] (should be [-1, 1])`);
+        console.log(`[ImageEncoder]   Sample UV coords (first 10 vertices):`);
+        for (const sample of sampleUVs) {
+            console.log(`[ImageEncoder]     vertex ${sample.idx}: u=${sample.u.toFixed(2)}, v=${sample.v.toFixed(2)}`);
+        }
+
+        // 🔍 DEBUG: サンプリングされた特徴量の非ゼロチェック
+        let nonZeroFeatures = 0;
+        let zeroFeatures = 0;
+        for (let i = 0; i < output.length; i++) {
+            if (Math.abs(output[i]) > 0.0001) {
+                nonZeroFeatures++;
+            } else {
+                zeroFeatures++;
+            }
+        }
+        console.log(`[ImageEncoder]   Sampled features: ${nonZeroFeatures} non-zero, ${zeroFeatures} zero (${(nonZeroFeatures/output.length*100).toFixed(1)}% non-zero)`);
+
         return { features: output, visibilityMask };
     }
 
