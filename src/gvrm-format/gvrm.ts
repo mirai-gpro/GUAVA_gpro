@@ -89,7 +89,7 @@ export class GVRM {
   private gsCoarseRenderer: GuavaWebGPURendererPractical | null = null;
   private gsComputeRenderer: GuavaWebGPURendererCompute | null = null;
   private useComputeRenderer: boolean = true;  // ← 32チャンネル完全保持のためCompute Rendererを使用
-  private debugBypassRFDN: boolean = true;  // SimpleUNet出力が異常なのでバイパス
+  private debugBypassRFDN: boolean = false;  // v77: Refiner有効化（Gemini推奨）
   private debugInjectTestColors: boolean = false;  // テスト用: 虹色グラデーションを注入してレンダリング検証
   private readbackBuffers: GPUBuffer[] = [];
   private coarseFeatureArray: Float32Array | null = null;
@@ -120,9 +120,9 @@ export class GVRM {
       useWebGPU: false  // WASM使用（安定性優先）
     });
     
-    console.log('[GVRM] Created (v76: Global Contrast Fix 2026-01-26)');
+    console.log('[GVRM] Created (v77: Refiner Enabled 2026-01-26)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
-    console.log('[GVRM] 🔧 BUILD v76 - Fixed per-channel → global contrast');
+    console.log('[GVRM] 🔧 BUILD v77 - SimpleUNet Refiner enabled (Gemini recommendation)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
   }
   
@@ -697,6 +697,39 @@ export class GVRM {
         }
 
         displayRGB = await this.neuralRefiner.process(normalizedFeatures);
+
+        // 🔍 v77: Refiner output debug
+        if (this.frameCount === 1) {
+          console.log('[GVRM] 🚀 SimpleUNet Refiner OUTPUT:');
+          const refinerStats = this.analyzeArray(displayRGB);
+          console.log(`[GVRM]   Range: [${refinerStats.min.toFixed(4)}, ${refinerStats.max.toFixed(4)}]`);
+
+          // RGB channel analysis
+          const pixelCount = 512 * 512;
+          let rSum = 0, gSum = 0, bSum = 0, count = 0;
+          for (let i = 0; i < pixelCount; i++) {
+            const r = displayRGB[i * 3 + 0];
+            const g = displayRGB[i * 3 + 1];
+            const b = displayRGB[i * 3 + 2];
+            if (r > 0.01 || g > 0.01 || b > 0.01) {
+              rSum += r; gSum += g; bSum += b; count++;
+            }
+          }
+          if (count > 0) {
+            console.log(`[GVRM]   RGB means (non-bg): R=${(rSum/count).toFixed(4)}, G=${(gSum/count).toFixed(4)}, B=${(bSum/count).toFixed(4)}`);
+          }
+
+          // Sample pixels
+          console.log('[GVRM]   Sample pixels:');
+          for (let y = 200; y < 210; y++) {
+            const x = 256;
+            const idx = (y * 512 + x) * 3;
+            const r = displayRGB[idx], g = displayRGB[idx+1], b = displayRGB[idx+2];
+            if (r > 0.01 || g > 0.01 || b > 0.01) {
+              console.log(`[GVRM]     (${x},${y}): R=${r.toFixed(4)}, G=${g.toFixed(4)}, B=${b.toFixed(4)}`);
+            }
+          }
+        }
       }
 
       if (this.webglDisplay) {
@@ -710,7 +743,7 @@ export class GVRM {
         console.log(`  Coarse features (32ch): min=${coarseStats.min.toFixed(4)}, max=${coarseStats.max.toFixed(4)}`);
         console.log(`  Display RGB: min=${displayStats.min.toFixed(4)}, max=${displayStats.max.toFixed(4)}`);
         if (!this.debugBypassRFDN) {
-          console.log(`  🚀 SimpleUNet Refiner: Input normalized to [0,1], sigmoid applied`);
+          console.log(`  🚀 SimpleUNet Refiner: Input normalized to [0,1], output is final RGB`);
         }
       }
 
