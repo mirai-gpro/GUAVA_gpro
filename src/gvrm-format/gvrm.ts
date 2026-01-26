@@ -544,12 +544,12 @@ export class GVRM {
               // チャンネル別のコントラストストレッチ
               const range = chStats[c].max - chStats[c].min;
               if (range > 0.01) {
-                // [min, max] → [0.1, 0.9]
-                val = 0.1 + 0.8 * (val - chStats[c].min) / range;
+                // [min, max] → [0, 1]（フルレンジ）
+                val = (val - chStats[c].min) / range;
               }
 
-              // ガンマ補正（明るさ調整）- γ=0.8 でやや明るく
-              val = Math.pow(val, 0.8);
+              // より強いガンマ補正（明るさ調整）- γ=0.5 で大幅に明るく
+              val = Math.pow(val, 0.5);
 
               displayRGB[dstIdx] = Math.max(0, Math.min(1, val));
             }
@@ -563,7 +563,7 @@ export class GVRM {
             const chName = ['R', 'G', 'B'][ch];
             console.log(`[GVRM]   Ch ${ch} (${chName}): [${chStats[ch].min.toFixed(4)}, ${chStats[ch].max.toFixed(4)}], mean=${chStats[ch].mean.toFixed(4)}, pixels=${chStats[ch].count}`);
           }
-          console.log('[GVRM]   Applied: per-channel contrast stretch [min,max]→[0.1,0.9] + gamma=0.8');
+          console.log('[GVRM]   Applied: per-channel contrast stretch [min,max]→[0,1] + gamma=0.5 (aggressive brightness)');
         }
       } else {
         // Neural Refiner (SimpleUNet): 32ch特徴マップを[0,1]に正規化して入力
