@@ -129,9 +129,9 @@ export class GVRM {
       useWebGPU: false  // WASM使用（安定性優先）
     });
     
-    console.log('[GVRM] Created (v84: UV Loader Fix 2026-01-26)');
+    console.log('[GVRM] Created (v85: UV Feature Mapper Fix 2026-01-26)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
-    console.log('[GVRM] 🔧 BUILD v84 - Fixed UV Triangle Mapping loader for 20MB format');
+    console.log('[GVRM] 🔧 BUILD v85 - Fixed UV Feature Mapper: use full PLY mesh');
     console.log('[GVRM] ════════════════════════════════════════════════════');
   }
   
@@ -447,10 +447,12 @@ export class GVRM {
 
       try {
         // Step 1: Map appearance features to UV space
+        // Note: Use FULL PLY positions, not truncated vertices (faces reference full mesh)
         console.log('[GVRM]   Step 1: Mapping appearance features to UV space...');
+        console.log(`[GVRM]   Using full PLY positions: ${this.plyData.positions.length / 3} vertices`);
         const uvFeatures128 = this.uvFeatureMapper.mapToUV(
           this.appearanceMap,
-          vertices,
+          this.plyData.positions,  // Full mesh positions, not truncated vertices!
           this.plyData.faces,
           this.uvTriangleMapping
         );

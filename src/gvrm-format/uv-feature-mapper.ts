@@ -72,6 +72,7 @@ export class UVFeatureMapper {
     console.log(`[UVFeatureMapper]   Input: [${numChannels}, ${imageHeight}, ${imageWidth}]`);
     console.log(`[UVFeatureMapper]   Output: [${numChannels}, ${uvHeight}, ${uvWidth}]`);
     console.log(`[UVFeatureMapper]   Valid UV pixels: ${uvMapping.numValid.toLocaleString()}`);
+    console.log(`[UVFeatureMapper]   Vertices: ${vertices.length / 3}, Faces: ${faces.length / 3}`);
 
     // Output UV feature map [C, H_uv, W_uv]
     const uvFeatures = new Float32Array(numChannels * uvHeight * uvWidth);
@@ -84,6 +85,18 @@ export class UVFeatureMapper {
     // For each valid UV pixel
     let validCount = 0;
     let outOfBoundsCount = 0;
+    let invalidTriangleCount = 0;
+    let invalidVertexCount = 0;
+    let invalidUVCount = 0;
+    let depthFailCount = 0;
+
+    const numFaces = faces.length / 3;
+    const numVertices = vertices.length / 3;
+
+    // Debug: check first few entries
+    if (uvMapping.numValid > 0) {
+      console.log(`[UVFeatureMapper]   Sample uvMapping[0]: tri=${uvMapping.triangleIndices[0]}, bary=[${uvMapping.barycentricCoords[0].toFixed(3)}, ${uvMapping.barycentricCoords[1].toFixed(3)}, ${uvMapping.barycentricCoords[2].toFixed(3)}], uv=[${uvMapping.uvCoords[0]}, ${uvMapping.uvCoords[1]}]`);
+    }
 
     for (let i = 0; i < uvMapping.numValid; i++) {
       const triIdx = uvMapping.triangleIndices[i];
@@ -93,15 +106,26 @@ export class UVFeatureMapper {
       const uvU = uvMapping.uvCoords[i * 2 + 0];
       const uvV = uvMapping.uvCoords[i * 2 + 1];
 
+      // Validate triangle index
+      if (triIdx >= numFaces) {
+        invalidTriangleCount++;
+        if (invalidTriangleCount <= 3) {
+          console.log(`[UVFeatureMapper]   ⚠️ Invalid triangle ${triIdx} >= ${numFaces}`);
+        }
+        continue;
+      }
+
       // Get triangle vertex indices
       const v0Idx = faces[triIdx * 3 + 0];
       const v1Idx = faces[triIdx * 3 + 1];
       const v2Idx = faces[triIdx * 3 + 2];
 
-      // Validate indices
-      if (v0Idx * 3 + 2 >= vertices.length ||
-          v1Idx * 3 + 2 >= vertices.length ||
-          v2Idx * 3 + 2 >= vertices.length) {
+      // Validate vertex indices
+      if (v0Idx >= numVertices || v1Idx >= numVertices || v2Idx >= numVertices) {
+        invalidVertexCount++;
+        if (invalidVertexCount <= 3) {
+          console.log(`[UVFeatureMapper]   ⚠️ Invalid vertex index: tri=${triIdx}, v=[${v0Idx}, ${v1Idx}, ${v2Idx}], max=${numVertices}`);
+        }
         continue;
       }
 
@@ -126,7 +150,10 @@ export class UVFeatureMapper {
       // Project to image space (canonical camera: looking at +Z)
       // Assuming vertices are already in camera space or need minimal transform
       const depth = pz + 22.0;  // T[2] offset from Python
-      if (depth < 0.001) continue;
+      if (depth < 0.001) {
+        depthFailCount++;
+        continue;
+      }
 
       // Perspective projection
       const imgX = (px * focalLength / depth) + cx;
@@ -153,11 +180,25 @@ export class UVFeatureMapper {
       const fy = pixelY - y0;
 
       // UV pixel coordinates
-      const uvPixelX = Math.round(uvU * (uvWidth - 1));
-      const uvPixelY = Math.round(uvV * (uvHeight - 1));
+      // Note: uvCoords can be in pixel space (0-width) or normalized space (0-1)
+      // Detect based on max value
+      let uvPixelX: number, uvPixelY: number;
+      if (uvU > 2 || uvV > 2) {
+        // Already in pixel space
+        uvPixelX = Math.round(uvU);
+        uvPixelY = Math.round(uvV);
+      } else {
+        // Normalized space [0, 1]
+        uvPixelX = Math.round(uvU * (uvWidth - 1));
+        uvPixelY = Math.round(uvV * (uvHeight - 1));
+      }
 
       if (uvPixelX < 0 || uvPixelX >= uvWidth ||
           uvPixelY < 0 || uvPixelY >= uvHeight) {
+        invalidUVCount++;
+        if (invalidUVCount <= 3) {
+          console.log(`[UVFeatureMapper]   ⚠️ Invalid UV pixel: (${uvPixelX}, ${uvPixelY}), raw uv=(${uvU}, ${uvV})`);
+        }
         continue;
       }
 
@@ -185,8 +226,13 @@ export class UVFeatureMapper {
       validCount++;
     }
 
-    console.log(`[UVFeatureMapper]   Mapped: ${validCount.toLocaleString()} pixels`);
-    console.log(`[UVFeatureMapper]   Out of bounds: ${outOfBoundsCount.toLocaleString()}`);
+    console.log(`[UVFeatureMapper]   ✅ Mapped: ${validCount.toLocaleString()} pixels`);
+    console.log(`[UVFeatureMapper]   ❌ Failures:`);
+    console.log(`[UVFeatureMapper]      Invalid triangles: ${invalidTriangleCount.toLocaleString()}`);
+    console.log(`[UVFeatureMapper]      Invalid vertices: ${invalidVertexCount.toLocaleString()}`);
+    console.log(`[UVFeatureMapper]      Depth fail: ${depthFailCount.toLocaleString()}`);
+    console.log(`[UVFeatureMapper]      Image out of bounds: ${outOfBoundsCount.toLocaleString()}`);
+    console.log(`[UVFeatureMapper]      UV out of bounds: ${invalidUVCount.toLocaleString()}`);
 
     // Statistics
     let min = Infinity, max = -Infinity, sum = 0, nonZero = 0;
