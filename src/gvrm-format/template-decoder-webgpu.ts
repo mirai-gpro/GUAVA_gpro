@@ -516,22 +516,36 @@ export class TemplateDecoderWebGPU {
 
   /**
    * Compute harmonic embedding for a direction vector
-   * Python版 HarmonicEmbedding 準拠
+   * Python版 PyTorch3D HarmonicEmbedding 準拠
+   *
+   * PyTorch3D の順序:
+   *   - 最初に全周波数のsin: [sin(f1*x), sin(f1*y), sin(f1*z), sin(f2*x), ...]
+   *   - 次に全周波数のcos: [cos(f1*x), cos(f1*y), cos(f1*z), cos(f2*x), ...]
    *
    * @param dir 正規化された方向ベクトル [dx, dy, dz]
-   * @returns [24] = 4周波数 × 2(sin/cos) × 3次元
+   * @returns [24] = (4周波数 × 3次元) × 2(sin/cos)
    */
   private computeHarmonicEmbedding(dir: [number, number, number]): Float32Array {
     const nHarmonic = 4;  // n_harmonic_dir = 4 (Python版と同じ)
     const result = new Float32Array(nHarmonic * 2 * 3);  // 24
 
+    // PyTorch3D HarmonicEmbedding の順序に準拠:
+    // embed = (x[..., None] * frequencies).view(-1)  → [x*f1, x*f2, ..., y*f1, y*f2, ..., z*f1, ...]
+    // return cat((embed.sin(), embed.cos()), dim=-1)
+
+    // Part 1: All sines first
     let idx = 0;
-    // Python版 HarmonicEmbedding: frequencies = [2^0, 2^1, 2^2, 2^3] = [1, 2, 4, 8]
-    for (let f = 0; f < nHarmonic; f++) {
-      const freq = Math.pow(2, f);  // [1, 2, 4, 8]
-      for (let dim = 0; dim < 3; dim++) {
-        // PyTorch3D convention: sin first, then cos
+    for (let dim = 0; dim < 3; dim++) {
+      for (let f = 0; f < nHarmonic; f++) {
+        const freq = Math.pow(2, f);  // [1, 2, 4, 8]
         result[idx++] = Math.sin(freq * dir[dim]);
+      }
+    }
+
+    // Part 2: All cosines
+    for (let dim = 0; dim < 3; dim++) {
+      for (let f = 0; f < nHarmonic; f++) {
+        const freq = Math.pow(2, f);  // [1, 2, 4, 8]
         result[idx++] = Math.cos(freq * dir[dim]);
       }
     }
