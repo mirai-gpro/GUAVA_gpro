@@ -179,26 +179,29 @@ export class RFDNRefiner {
       }
       console.log(`[NeuralRefiner] Raw output range: [${rawMin.toFixed(4)}, ${rawMax.toFixed(4)}]`);
 
+      // 出力を[0, 1]に線形マッピング（モデル出力のバイアス補正）
+      const outputRange = rawMax - rawMin || 1;
+
       if (dims.length === 4 && dims[1] === 3) {
         // [1, 3, H, W] → [H, W, 3]
-        // Python版と同様: sigmoidなし、クランプのみ
+        // 線形変換: [rawMin, rawMax] → [0, 1]
         for (let h = 0; h < H; h++) {
           for (let w = 0; w < W; w++) {
             for (let c = 0; c < C; c++) {
               const srcIdx = c * H * W + h * W + w;
               const dstIdx = h * W * C + w * C + c;
-              output[dstIdx] = rawOutput[srcIdx];
+              output[dstIdx] = (rawOutput[srcIdx] - rawMin) / outputRange;
             }
           }
         }
       } else {
-        // そのままコピー
+        // そのままコピー + 線形変換
         for (let i = 0; i < H * W * C; i++) {
-          output[i] = rawOutput[i];
+          output[i] = (rawOutput[i] - rawMin) / outputRange;
         }
       }
 
-      // [0, 1] にクランプ (Python: torch.clamp(image, 0, 1))
+      // 念のためクランプ（すでに[0,1]のはず）
       for (let i = 0; i < output.length; i++) {
         output[i] = Math.max(0, Math.min(1, output[i]));
       }
