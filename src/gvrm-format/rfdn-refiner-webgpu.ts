@@ -179,32 +179,52 @@ export class RFDNRefiner {
       }
       console.log(`[NeuralRefiner] Raw output range: [${rawMin.toFixed(4)}, ${rawMax.toFixed(4)}]`);
 
-      // 出力を[0, 1]に線形マッピング（モデル出力のバイアス補正）
-      const outputRange = rawMax - rawMin || 1;
+      // v78: 出力処理の修正
+      // モデル出力が pre-sigmoid 値の場合は sigmoid を適用
+      // 線形マッピングは色差を消すので使用しない
+      const useSigmoid = rawMin < -1 || rawMax > 2;  // pre-sigmoid値っぽい場合
+
+      if (useSigmoid) {
+        console.log('[NeuralRefiner] 🔧 Applying sigmoid (raw values suggest pre-sigmoid output)');
+      }
 
       if (dims.length === 4 && dims[1] === 3) {
         // [1, 3, H, W] → [H, W, 3]
-        // 線形変換: [rawMin, rawMax] → [0, 1]
         for (let h = 0; h < H; h++) {
           for (let w = 0; w < W; w++) {
             for (let c = 0; c < C; c++) {
               const srcIdx = c * H * W + h * W + w;
               const dstIdx = h * W * C + w * C + c;
-              output[dstIdx] = (rawOutput[srcIdx] - rawMin) / outputRange;
+              let val = rawOutput[srcIdx];
+
+              if (useSigmoid) {
+                // Sigmoid: 1 / (1 + exp(-x))
+                val = 1 / (1 + Math.exp(-val));
+              }
+
+              output[dstIdx] = Math.max(0, Math.min(1, val));
             }
           }
         }
       } else {
-        // そのままコピー + 線形変換
+        // そのままコピー
         for (let i = 0; i < H * W * C; i++) {
-          output[i] = (rawOutput[i] - rawMin) / outputRange;
+          let val = rawOutput[i];
+          if (useSigmoid) {
+            val = 1 / (1 + Math.exp(-val));
+          }
+          output[i] = Math.max(0, Math.min(1, val));
         }
       }
 
-      // 念のためクランプ（すでに[0,1]のはず）
+      // 出力統計（sigmoid後）
+      let finalMin = Infinity, finalMax = -Infinity, finalSum = 0;
       for (let i = 0; i < output.length; i++) {
-        output[i] = Math.max(0, Math.min(1, output[i]));
+        if (output[i] < finalMin) finalMin = output[i];
+        if (output[i] > finalMax) finalMax = output[i];
+        finalSum += output[i];
       }
+      console.log(`[NeuralRefiner] Final output: [${finalMin.toFixed(4)}, ${finalMax.toFixed(4)}], mean=${(finalSum/output.length).toFixed(4)}`);
 
       // 出力統計
       const outputStats = this.computeStats(output);

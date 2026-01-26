@@ -120,9 +120,9 @@ export class GVRM {
       useWebGPU: false  // WASM使用（安定性優先）
     });
     
-    console.log('[GVRM] Created (v77: Refiner Enabled 2026-01-26)');
+    console.log('[GVRM] Created (v78: Refiner Sigmoid Fix 2026-01-26)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
-    console.log('[GVRM] 🔧 BUILD v77 - SimpleUNet Refiner enabled (Gemini recommendation)');
+    console.log('[GVRM] 🔧 BUILD v78 - Refiner output uses sigmoid (not linear mapping)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
   }
   
