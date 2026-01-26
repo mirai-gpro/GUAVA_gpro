@@ -344,6 +344,8 @@ export class GuavaWebGPURendererCompute {
     /**
      * CPU-based Gaussian splatting that preserves all 32 channels
      * This is slower than GPU but guarantees correctness
+     *
+     * 背景色 = 0.0 (Python diff-gaussian-rasterization と同じ)
      */
     private cpuSplat(): void {
         const width = this.width;
@@ -351,9 +353,10 @@ export class GuavaWebGPURendererCompute {
         const pixelCount = width * height;
 
         // Initialize output arrays (8 textures x 4 channels = 32)
+        // 背景 = 0.0 (Python実装に合わせる)
         const outputs: Float32Array[] = [];
         for (let i = 0; i < 8; i++) {
-            outputs.push(new Float32Array(pixelCount * 4).fill(1.0)); // bg = 1.0
+            outputs.push(new Float32Array(pixelCount * 4).fill(0.0)); // bg = 0.0
         }
 
         // Transmittance per pixel (starts at 1.0)
@@ -408,20 +411,14 @@ export class GuavaWebGPURendererCompute {
                     const weight = alpha * T;
 
                     // Accumulate all 32 latent channels
+                    // 正しい3DGS式: C = Σ(c_i * α_i * T_i)
                     for (let ch = 0; ch < 32; ch++) {
                         const texIdx = Math.floor(ch / 4);
                         const chInTex = ch % 4;
                         const bufIdx = pixelIdx * 4 + chInTex;
 
-                        // Blend: new = latent * weight + old * (1 - weight)
-                        // But we're doing proper splatting:
                         // accumulated += color * alpha * T
-                        // transmittance *= (1 - alpha)
-                        //
-                        // At the end, final = accumulated + bg * T_final
-                        // Since bg = 1.0 and we initialized with bg,
-                        // we subtract bg * weight and add latent * weight:
-                        outputs[texIdx][bufIdx] += (latent[ch] - 1.0) * weight;
+                        outputs[texIdx][bufIdx] += latent[ch] * weight;
                     }
 
                     // Update transmittance
