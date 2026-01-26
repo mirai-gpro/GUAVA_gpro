@@ -120,9 +120,9 @@ export class GVRM {
       useWebGPU: false  // WASM使用（安定性優先）
     });
     
-    console.log('[GVRM] Created (v79: Input [-1,1] + No Stretch 2026-01-26)');
+    console.log('[GVRM] Created (v80: Global Contrast Stretch 2026-01-26)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
-    console.log('[GVRM] 🔧 BUILD v79 - Input to [-1,1], Sigmoid output, no display stretch');
+    console.log('[GVRM] 🔧 BUILD v80 - Input [-1,1], Sigmoid, GLOBAL stretch (preserves color)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
   }
   

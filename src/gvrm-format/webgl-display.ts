@@ -144,46 +144,38 @@ export class WebGLDisplay {
       return;
     }
 
-    // 統計を計算（デバッグ用）
-    let min = Infinity, max = -Infinity;
+    // v80: GLOBAL min/max を計算（全RGB共通）
+    // これにより色差を保持しながらコントラストを改善
+    let globalMin = Infinity, globalMax = -Infinity;
     for (let i = 0; i < data.length; i++) {
       const v = data[i];
-      if (v < min) min = v;
-      if (v > max) max = v;
+      if (v < globalMin) globalMin = v;
+      if (v > globalMax) globalMax = v;
     }
-    const range = max - min || 1;
+    const globalRange = globalMax - globalMin || 1;
 
-    // v79: ヒストグラムストレッチング無効化（Gemini推奨）
-    // Refiner出力は既に[0,1]のはずなので、ストレッチすると色差が消える
-    const useStretch = false;  // true: 従来のストレッチ, false: パススルー
-
-    // HWC → RGBA変換
+    // HWC → RGBA変換 + GLOBAL contrast stretch
+    // 重要: 全RGB同じ係数でストレッチするため、色差が保持される
     const pixels = new Float32Array(width * height * 4);
 
     for (let i = 0; i < width * height; i++) {
       const srcIdx = i * 3;
-      if (useStretch) {
-        // ストレッチ: [min, max] → [0, 1] (非推奨)
-        pixels[i * 4 + 0] = (data[srcIdx + 0] - min) / range;
-        pixels[i * 4 + 1] = (data[srcIdx + 1] - min) / range;
-        pixels[i * 4 + 2] = (data[srcIdx + 2] - min) / range;
-      } else {
-        // パススルー: そのまま表示（色差を保持）
-        pixels[i * 4 + 0] = Math.max(0, Math.min(1, data[srcIdx + 0]));
-        pixels[i * 4 + 1] = Math.max(0, Math.min(1, data[srcIdx + 1]));
-        pixels[i * 4 + 2] = Math.max(0, Math.min(1, data[srcIdx + 2]));
-      }
+      // GLOBAL stretch: [globalMin, globalMax] → [0, 1]
+      // 全チャンネル同じmin/maxを使うので色の比率が保持される
+      pixels[i * 4 + 0] = (data[srcIdx + 0] - globalMin) / globalRange;
+      pixels[i * 4 + 1] = (data[srcIdx + 1] - globalMin) / globalRange;
+      pixels[i * 4 + 2] = (data[srcIdx + 2] - globalMin) / globalRange;
       pixels[i * 4 + 3] = 1.0;  // A
     }
 
     // 初回フレームのみ統計情報を出力
     if (frameCount === 1) {
       console.log('[WebGLDisplay] First frame stats:', {
-        originalMin: min.toFixed(4),
-        originalMax: max.toFixed(4),
-        range: range.toFixed(4)
+        originalMin: globalMin.toFixed(4),
+        originalMax: globalMax.toFixed(4),
+        range: globalRange.toFixed(4)
       });
-      console.log('[WebGLDisplay] 🔧 v79: Histogram stretching DISABLED (passthrough mode)');
+      console.log('[WebGLDisplay] 🔧 v80: GLOBAL contrast stretch (same factor for RGB → preserves color)');
 
       // ======== 🔍🔍🔍 RGB CROSS-CHANNEL ANALYSIS IN DISPLAY INPUT ========
       console.log('[WebGLDisplay] 🔍🔍🔍 Input RGB cross-channel analysis:');
