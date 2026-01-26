@@ -341,8 +341,18 @@ export class TemplateDecoderWebGPU {
     // Step 6: Attribute heads
     // ================================================================
     // RGB: 283→128→32
+    // Python版 ubody_gaussian.py 準拠: 最初の3チャンネルにsigmoidを適用
+    // self._smplx_features_color[...,:3] = torch.sigmoid(self._smplx_features_color[...,:3])
     let rgb_hidden = this.batchLinearRelu(features_with_view, weights.color_0_weight, weights.color_0_bias, N, 283, 128);
     const colors = this.batchLinear(rgb_hidden, weights.color_2_weight, weights.color_2_bias, N, 128, 32);
+
+    // Apply sigmoid to first 3 channels (RGB) - Python版と同じ
+    for (let i = 0; i < N; i++) {
+      const offset = i * 32;
+      for (let c = 0; c < 3; c++) {
+        colors[offset + c] = 1 / (1 + Math.exp(-colors[offset + c]));
+      }
+    }
     
     // Opacity: 283→128→1 + sigmoid
     let opacity_hidden = this.batchLinearRelu(features_with_view, weights.opacity_0_weight, weights.opacity_0_bias, N, 283, 128);
