@@ -89,7 +89,7 @@ export class GVRM {
   private gsCoarseRenderer: GuavaWebGPURendererPractical | null = null;
   private gsComputeRenderer: GuavaWebGPURendererCompute | null = null;
   private useComputeRenderer: boolean = true;  // ← 32チャンネル完全保持のためCompute Rendererを使用
-  private debugBypassRFDN: boolean = false;  // DEBUG OFF: Use RFDN to convert 32ch → RGB
+  private debugBypassRFDN: boolean = true;  // DEBUG ON: Use sigmoid on first 3 channels (bypass broken SimpleUNet)
   private readbackBuffers: GPUBuffer[] = [];
   private coarseFeatureArray: Float32Array | null = null;
   
@@ -502,39 +502,40 @@ export class GVRM {
       let displayRGB: Float32Array;
 
       if (this.debugBypassRFDN) {
-        // DEBUG: RFDNをバイパスして最初3チャンネルをRGBとして直接表示
-        // これにより、Gaussian splatting自体が正しく動作しているかを確認
+        // DEBUG: RFDNをバイパスして最初3チャンネルにsigmoidを適用してRGBとして表示
+        // GUAVA論文: Ch 0-2はRGBに近い値になるようloss関数で制約されている
+        // sigmoid: 任意の値を[0, 1]に写像
         const width = 512, height = 512;
         displayRGB = new Float32Array(width * height * 3);
-
-        // 最初3チャンネルの統計を取得（正規化用）
         const pixelCount = width * height;
-        let minVal = Infinity, maxVal = -Infinity;
-        for (let ch = 0; ch < 3; ch++) {
-          for (let p = 0; p < pixelCount; p++) {
-            const val = coarseFeatures[ch * pixelCount + p];
-            if (val < minVal) minVal = val;
-            if (val > maxVal) maxVal = val;
-          }
-        }
-        const range = maxVal - minVal || 1;
 
-        // CHW → HWC変換 + 正規化 [0, 1]
+        // CHW → HWC変換 + sigmoid適用
         for (let y = 0; y < height; y++) {
           for (let x = 0; x < width; x++) {
             const p = y * width + x;
             for (let c = 0; c < 3; c++) {
               const srcIdx = c * pixelCount + p;
               const dstIdx = p * 3 + c;
-              // 正規化: [minVal, maxVal] → [0, 1]
-              displayRGB[dstIdx] = (coarseFeatures[srcIdx] - minVal) / range;
+              // Sigmoid: logistic function → [0, 1]
+              const val = coarseFeatures[srcIdx];
+              displayRGB[dstIdx] = 1 / (1 + Math.exp(-val));
             }
           }
         }
 
         if (this.frameCount === 1) {
-          console.log('[GVRM] 🔧 DEBUG: Bypassing RFDN, showing first 3 channels as RGB');
-          console.log(`[GVRM]   Normalization: [${minVal.toFixed(4)}, ${maxVal.toFixed(4)}] → [0, 1]`);
+          // 最初3チャンネルの統計
+          let minVal = Infinity, maxVal = -Infinity;
+          for (let ch = 0; ch < 3; ch++) {
+            for (let p = 0; p < pixelCount; p++) {
+              const val = coarseFeatures[ch * pixelCount + p];
+              if (val < minVal) minVal = val;
+              if (val > maxVal) maxVal = val;
+            }
+          }
+          console.log('[GVRM] 🔧 DEBUG: Bypassing RFDN, applying sigmoid to first 3 channels');
+          console.log(`[GVRM]   Raw ch 0-2 range: [${minVal.toFixed(4)}, ${maxVal.toFixed(4)}]`);
+          console.log(`[GVRM]   After sigmoid: [${(1/(1+Math.exp(-minVal))).toFixed(4)}, ${(1/(1+Math.exp(-maxVal))).toFixed(4)}]`);
         }
       } else {
         // Neural Refiner (SimpleUNet): 32ch特徴マップをそのまま入力
