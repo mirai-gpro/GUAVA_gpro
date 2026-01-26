@@ -87,7 +87,7 @@ export class GVRM {
   private gsCoarseRenderer: GuavaWebGPURendererPractical | null = null;
   private gsComputeRenderer: GuavaWebGPURendererCompute | null = null;
   private useComputeRenderer: boolean = true;  // ← 32チャンネル完全保持のためCompute Rendererを使用
-  private debugBypassRFDN: boolean = true;  // ← DEBUG: RFDNをバイパスして最初3chをRGBとして表示
+  private debugBypassRFDN: boolean = false;  // DEBUG OFF: Use RFDN to convert 32ch → RGB
   private readbackBuffers: GPUBuffer[] = [];
   private coarseFeatureArray: Float32Array | null = null;
   
