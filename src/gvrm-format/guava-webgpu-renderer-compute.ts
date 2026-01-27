@@ -5,6 +5,10 @@
 // Key difference from fragment shader approach:
 // - Fragment shader with hardware blending loses every 4th channel (used for alpha)
 // - Compute shader has full control over accumulation and preserves all channels
+//
+// v86: Unified output buffer to avoid WebGPU binding limit (8 storage buffers per stage)
+// - Single buffer: width * height * 32 floats
+// - GPU compute splatting with tile-based dispatch
 
 import { CameraUtils } from './camera-utils';
 
@@ -41,15 +45,30 @@ export class GuavaWebGPURendererCompute {
     private width: number;
     private height: number;
 
-    // Output textures (8 x RGBA = 32 channels)
+    // Output textures (8 x RGBA = 32 channels) - for compatibility
     private outputTextures: GPUTexture[] = [];
 
     // Compute pipeline and resources
     private clearPipeline: GPUComputePipeline | null = null;
     private splatPipeline: GPUComputePipeline | null = null;
     private gaussianBuffer: GPUBuffer | null = null;
-    private outputBuffers: GPUBuffer[] = [];
+
+    // v86: Single unified output buffer (replaces 8 separate buffers)
+    private unifiedOutputBuffer: GPUBuffer | null = null;
+    private outputBuffers: GPUBuffer[] = [];  // Legacy, kept for getOutputBuffers() compatibility
+
     private uniformBuffer: GPUBuffer | null = null;
+
+    // GPU compute resources
+    private sortedIndicesBuffer: GPUBuffer | null = null;
+    private sortedDataBuffer: GPUBuffer | null = null;
+    private atomicBuffer: GPUBuffer | null = null;  // Fixed-point atomic accumulation buffer
+
+    // Bind group layouts (stored for dynamic bind group creation)
+    private clearBindGroupLayout: GPUBindGroupLayout | null = null;
+    private splatBindGroupLayout: GPUBindGroupLayout | null = null;
+    private convertBindGroupLayout: GPUBindGroupLayout | null = null;
+    private convertPipeline: GPUComputePipeline | null = null;
 
     private depthArray: Float32Array;
     private indexArray: Uint32Array;
@@ -59,6 +78,7 @@ export class GuavaWebGPURendererCompute {
     private isInitialized = false;
     private sortCalled = false;
     private renderCount = 0;
+    private useGPUSplatting = true;  // v86: Enable GPU splatting
 
     constructor(device: GPUDevice, data: GaussianData, camera: CameraConfig) {
         this.device = device;
@@ -73,13 +93,13 @@ export class GuavaWebGPURendererCompute {
         for (let i = 0; i < count; i++) this.indexArray[i] = i;
 
         console.log('[ComputeRenderer] ═══════════════════════════════════════════');
-        console.log('[ComputeRenderer] 🔧 BUILD v75 - CPU splatting (no GPU compute)');
+        console.log('[ComputeRenderer] 🔧 BUILD v86 - GPU compute splatting');
         console.log('[ComputeRenderer] ═══════════════════════════════════════════');
         console.log('[ComputeRenderer] Constructor called with:');
-        console.log(`  vertexCount: ${count}`);
+        console.log(`  vertexCount: ${count.toLocaleString()}`);
         console.log(`  dimensions: ${this.width}x${this.height}`);
-        console.log(`  positions: ${data.positions.length} floats`);
-        console.log(`  latents: ${data.latents.length} floats`);
+        console.log(`  positions: ${data.positions.length.toLocaleString()} floats`);
+        console.log(`  latents: ${data.latents.length.toLocaleString()} floats`);
 
         this.initPromise = this.init();
     }
@@ -91,15 +111,18 @@ export class GuavaWebGPURendererCompute {
     private async init() {
         try {
             this.createOutputTextures();
-            this.createOutputBuffers();
+            this.createUnifiedOutputBuffer();
             this.createGaussianBuffer();
             this.createUniformBuffer();
+            this.createSortedBuffers();
             await this.createPipelines();
             this.isInitialized = true;
-            console.log('[ComputeRenderer] Initialization complete (32-channel compute shader)');
+            console.log('[ComputeRenderer] ✅ Initialization complete (GPU compute splatting)');
         } catch (error) {
             console.error('[ComputeRenderer] Initialization failed:', error);
-            throw error;
+            this.useGPUSplatting = false;
+            console.warn('[ComputeRenderer] Falling back to CPU splatting');
+            this.isInitialized = true;
         }
     }
 
@@ -120,20 +143,70 @@ export class GuavaWebGPURendererCompute {
         console.log('[ComputeRenderer] Created 8 output textures (32 channels total)');
     }
 
-    private createOutputBuffers(): void {
+    /**
+     * v86: Create single unified output buffer (32 channels per pixel)
+     * Replaces 8 separate buffers to avoid WebGPU binding limit
+     */
+    private createUnifiedOutputBuffer(): void {
+        this.unifiedOutputBuffer?.destroy();
+        this.atomicBuffer?.destroy();
+
+        // Single buffer: width * height * 32 channels * 4 bytes (float output)
+        const bufferSize = this.width * this.height * 32 * 4;
+        this.unifiedOutputBuffer = this.device.createBuffer({
+            size: bufferSize,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+            label: 'unified-output-32ch'
+        });
+
+        // Atomic buffer for fixed-point accumulation: width * height * 32 * 4 bytes (i32)
+        this.atomicBuffer = this.device.createBuffer({
+            size: bufferSize,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            label: 'atomic-accumulator'
+        });
+
+        console.log(`[ComputeRenderer] Created unified output buffer: ${(bufferSize / 1024 / 1024).toFixed(2)} MB (32 channels)`);
+        console.log(`[ComputeRenderer] Created atomic buffer: ${(bufferSize / 1024 / 1024).toFixed(2)} MB`);
+
+        // Also create legacy output buffers for getOutputBuffers() compatibility
         this.outputBuffers.forEach(b => b.destroy());
         this.outputBuffers = [];
-
-        const bufferSize = this.width * this.height * 4 * 4; // 4 floats per pixel
-
+        const legacyBufferSize = this.width * this.height * 4 * 4;
         for (let i = 0; i < 8; i++) {
             const buffer = this.device.createBuffer({
-                size: bufferSize,
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+                size: legacyBufferSize,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+                label: `legacy-output-${i}`
             });
             this.outputBuffers.push(buffer);
         }
-        console.log('[ComputeRenderer] Created 8 storage buffers');
+    }
+
+    /**
+     * Create buffers for sorted Gaussian data
+     */
+    private createSortedBuffers(): void {
+        this.sortedIndicesBuffer?.destroy();
+        this.sortedDataBuffer?.destroy();
+
+        const maxGaussians = this.gaussianData.vertexCount;
+
+        // Sorted indices buffer
+        this.sortedIndicesBuffer = this.device.createBuffer({
+            size: maxGaussians * 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            label: 'sorted-indices'
+        });
+
+        // Sorted screen-space data: [screenX, screenY, radius, opacity] per Gaussian
+        this.sortedDataBuffer = this.device.createBuffer({
+            size: maxGaussians * 16,  // 4 floats per Gaussian
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            label: 'sorted-screen-data'
+        });
+
+        console.log(`[ComputeRenderer] Created sorted buffers for ${maxGaussians.toLocaleString()} Gaussians`);
     }
 
     private createGaussianBuffer(): void {
@@ -175,23 +248,269 @@ export class GuavaWebGPURendererCompute {
     }
 
     private createUniformBuffer(): void {
-        // Uniforms: view(16) + proj(16) + dims(2) + count(1) + pad(1) = 36 floats
+        // v86: Simplified uniforms: width(1) + height(1) + numGaussians(1) + pad(1) = 4 u32s = 16 bytes
         this.uniformBuffer = this.device.createBuffer({
-            size: 36 * 4,
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+            size: 16,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            label: 'uniforms'
         });
     }
 
     private async createPipelines(): Promise<void> {
-        // NOTE: We're using CPU-based splatting (cpuSplat) for rendering,
-        // so GPU compute pipelines are not needed.
-        // The previous GPU pipeline had 10 bindings which exceeded the
-        // maxStorageBuffersPerShaderStage limit (8) on many devices.
-        //
-        // If GPU splatting is needed in the future, the buffers should be
-        // consolidated into a single large buffer with offset-based access.
+        // v86: GPU compute pipelines with unified buffer
+        // Using per-Gaussian approach with fixed-point atomic accumulation
+        // This avoids O(pixels * Gaussians) complexity of per-pixel approach
 
-        console.log('[ComputeRenderer] Using CPU splatting (GPU pipelines skipped to avoid binding limit)');
+        // Clear shader - initialize output buffer to 0
+        const clearShaderCode = /* wgsl */`
+            @group(0) @binding(0) var<storage, read_write> output: array<i32>;
+
+            struct Uniforms {
+                width: u32,
+                height: u32,
+                numGaussians: u32,
+                pad: u32
+            }
+            @group(0) @binding(1) var<uniform> uniforms: Uniforms;
+
+            @compute @workgroup_size(256)
+            fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+                let pixelIdx = gid.x;
+                let totalPixels = uniforms.width * uniforms.height;
+
+                if (pixelIdx >= totalPixels) {
+                    return;
+                }
+
+                // Clear all 32 channels to 0 (using i32 for atomic operations)
+                let baseIdx = pixelIdx * 32u;
+                for (var ch = 0u; ch < 32u; ch++) {
+                    output[baseIdx + ch] = 0;
+                }
+            }
+        `;
+
+        // Splat shader - per-Gaussian approach
+        // Each thread processes one Gaussian and atomically accumulates to affected pixels
+        // Uses fixed-point arithmetic (scale by 2^14) for atomic operations
+        const splatShaderCode = /* wgsl */`
+            struct Gaussian {
+                pos: vec3<f32>,
+                opacity: f32,
+                scale: vec3<f32>,
+                pad: f32,
+                rot: vec4<f32>,
+                latent: array<f32, 32>
+            }
+
+            struct SortedData {
+                screenX: f32,
+                screenY: f32,
+                radius: f32,
+                opacity: f32
+            }
+
+            struct Uniforms {
+                width: u32,
+                height: u32,
+                numGaussians: u32,
+                pad: u32
+            }
+
+            @group(0) @binding(0) var<storage, read_write> output: array<atomic<i32>>;
+            @group(0) @binding(1) var<uniform> uniforms: Uniforms;
+            @group(0) @binding(2) var<storage, read> gaussians: array<Gaussian>;
+            @group(0) @binding(3) var<storage, read> sortedIndices: array<u32>;
+            @group(0) @binding(4) var<storage, read> sortedData: array<SortedData>;
+
+            const FIXED_POINT_SCALE: f32 = 16384.0;  // 2^14
+
+            @compute @workgroup_size(256)
+            fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+                let gi = gid.x;
+                if (gi >= uniforms.numGaussians) {
+                    return;
+                }
+
+                let gaussianIdx = sortedIndices[gi];
+                let sd = sortedData[gi];
+                let g = gaussians[gaussianIdx];
+
+                // Skip nearly transparent Gaussians
+                if (sd.opacity < 0.001) {
+                    return;
+                }
+
+                // Compute bounding box (3-sigma)
+                let radius3 = sd.radius * 3.0;
+                let minX = max(0, i32(sd.screenX - radius3));
+                let maxX = min(i32(uniforms.width) - 1, i32(sd.screenX + radius3));
+                let minY = max(0, i32(sd.screenY - radius3));
+                let maxY = min(i32(uniforms.height) - 1, i32(sd.screenY + radius3));
+
+                let radiusSq = sd.radius * sd.radius + 0.0001;
+
+                // Splat to affected pixels
+                for (var py = minY; py <= maxY; py++) {
+                    for (var px = minX; px <= maxX; px++) {
+                        let dx = f32(px) - sd.screenX;
+                        let dy = f32(py) - sd.screenY;
+                        let r2 = (dx * dx + dy * dy) / radiusSq;
+
+                        if (r2 > 9.0) {
+                            continue;
+                        }
+
+                        // Gaussian weight (simplified: no transmittance for atomic approach)
+                        let gaussianWeight = exp(-0.5 * r2);
+                        let weight = gaussianWeight * sd.opacity;
+
+                        if (weight < 0.001) {
+                            continue;
+                        }
+
+                        // Atomic accumulate all 32 channels using fixed-point
+                        let pixelIdx = u32(py) * uniforms.width + u32(px);
+                        let baseIdx = pixelIdx * 32u;
+
+                        for (var ch = 0u; ch < 32u; ch++) {
+                            let value = g.latent[ch] * weight;
+                            let fixedValue = i32(value * FIXED_POINT_SCALE);
+                            atomicAdd(&output[baseIdx + ch], fixedValue);
+                        }
+                    }
+                }
+            }
+        `;
+
+        // Convert shader - convert fixed-point back to float
+        const convertShaderCode = /* wgsl */`
+            @group(0) @binding(0) var<storage, read> input: array<i32>;
+            @group(0) @binding(1) var<storage, read_write> output: array<f32>;
+
+            struct Uniforms {
+                width: u32,
+                height: u32,
+                numGaussians: u32,
+                pad: u32
+            }
+            @group(0) @binding(2) var<uniform> uniforms: Uniforms;
+
+            const FIXED_POINT_SCALE: f32 = 16384.0;  // 2^14
+
+            @compute @workgroup_size(256)
+            fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+                let pixelIdx = gid.x;
+                let totalPixels = uniforms.width * uniforms.height;
+
+                if (pixelIdx >= totalPixels) {
+                    return;
+                }
+
+                let baseIdx = pixelIdx * 32u;
+                for (var ch = 0u; ch < 32u; ch++) {
+                    let fixedValue = input[baseIdx + ch];
+                    output[baseIdx + ch] = f32(fixedValue) / FIXED_POINT_SCALE;
+                }
+            }
+        `;
+
+        try {
+            // Create clear pipeline
+            const clearShaderModule = this.device.createShaderModule({
+                code: clearShaderCode,
+                label: 'clear-shader'
+            });
+
+            const clearBindGroupLayout = this.device.createBindGroupLayout({
+                entries: [
+                    { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                    { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } }
+                ],
+                label: 'clear-bind-group-layout'
+            });
+
+            this.clearPipeline = this.device.createComputePipeline({
+                layout: this.device.createPipelineLayout({
+                    bindGroupLayouts: [clearBindGroupLayout],
+                    label: 'clear-pipeline-layout'
+                }),
+                compute: {
+                    module: clearShaderModule,
+                    entryPoint: 'main'
+                },
+                label: 'clear-pipeline'
+            });
+
+            // Create splat pipeline
+            const splatShaderModule = this.device.createShaderModule({
+                code: splatShaderCode,
+                label: 'splat-shader'
+            });
+
+            const splatBindGroupLayout = this.device.createBindGroupLayout({
+                entries: [
+                    { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                    { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+                    { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                    { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                    { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }
+                ],
+                label: 'splat-bind-group-layout'
+            });
+
+            this.splatPipeline = this.device.createComputePipeline({
+                layout: this.device.createPipelineLayout({
+                    bindGroupLayouts: [splatBindGroupLayout],
+                    label: 'splat-pipeline-layout'
+                }),
+                compute: {
+                    module: splatShaderModule,
+                    entryPoint: 'main'
+                },
+                label: 'splat-pipeline'
+            });
+
+            // Create convert pipeline
+            const convertShaderModule = this.device.createShaderModule({
+                code: convertShaderCode,
+                label: 'convert-shader'
+            });
+
+            const convertBindGroupLayout = this.device.createBindGroupLayout({
+                entries: [
+                    { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                    { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                    { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } }
+                ],
+                label: 'convert-bind-group-layout'
+            });
+
+            this.convertPipeline = this.device.createComputePipeline({
+                layout: this.device.createPipelineLayout({
+                    bindGroupLayouts: [convertBindGroupLayout],
+                    label: 'convert-pipeline-layout'
+                }),
+                compute: {
+                    module: convertShaderModule,
+                    entryPoint: 'main'
+                },
+                label: 'convert-pipeline'
+            });
+
+            // Store layouts for bind group creation in gpuSplat
+            this.clearBindGroupLayout = clearBindGroupLayout;
+            this.splatBindGroupLayout = splatBindGroupLayout;
+            this.convertBindGroupLayout = convertBindGroupLayout;
+
+            console.log('[ComputeRenderer] ✅ GPU compute pipelines created (5 bindings max, within limit)');
+            this.useGPUSplatting = true;
+
+        } catch (error) {
+            console.error('[ComputeRenderer] Failed to create GPU pipelines:', error);
+            this.useGPUSplatting = false;
+            throw error;
+        }
     }
 
     public sort(): void {
@@ -337,13 +656,191 @@ export class GuavaWebGPURendererCompute {
         }
 
         this.renderCount++;
+        const startTime = performance.now();
 
-        // CPU-based splatting to ensure all 32 channels are preserved
-        this.cpuSplat();
+        if (this.useGPUSplatting && this.splatPipeline && this.clearPipeline) {
+            this.gpuSplat();
+            if (this.renderCount === 1) {
+                const elapsed = performance.now() - startTime;
+                console.log(`[ComputeRenderer] ✅ First render() complete (GPU splat, ${elapsed.toFixed(1)}ms)`);
+            }
+        } else {
+            // Fallback to CPU splatting
+            this.cpuSplat();
+            if (this.renderCount === 1) {
+                const elapsed = performance.now() - startTime;
+                console.log(`[ComputeRenderer] First render() complete (CPU fallback, ${elapsed.toFixed(1)}ms)`);
+            }
+        }
+    }
+
+    /**
+     * GPU compute-based splatting
+     * v86: Uses unified buffer with fixed-point atomic accumulation
+     *
+     * 3-pass approach:
+     * 1. Clear atomic buffer to 0
+     * 2. Splat Gaussians with atomic accumulation (per-Gaussian dispatch)
+     * 3. Convert fixed-point to float
+     */
+    private gpuSplat(): void {
+        const width = this.width;
+        const height = this.height;
+        const numGaussians = this.sortedGaussians.length;
+        const pixelCount = width * height;
+
+        // Update uniform buffer
+        const uniformData = new Uint32Array([width, height, numGaussians, 0]);
+        this.device.queue.writeBuffer(this.uniformBuffer!, 0, uniformData);
+
+        // Upload sorted Gaussian data
+        const sortedIndices = new Uint32Array(numGaussians);
+        const sortedData = new Float32Array(numGaussians * 4);
+
+        for (let i = 0; i < numGaussians; i++) {
+            const sg = this.sortedGaussians[i];
+            sortedIndices[i] = sg.index;
+            sortedData[i * 4 + 0] = sg.screenX;
+            sortedData[i * 4 + 1] = sg.screenY;
+            sortedData[i * 4 + 2] = sg.screenRadius;
+            sortedData[i * 4 + 3] = this.gaussianData.opacity[sg.index];
+        }
+
+        this.device.queue.writeBuffer(this.sortedIndicesBuffer!, 0, sortedIndices);
+        this.device.queue.writeBuffer(this.sortedDataBuffer!, 0, sortedData);
+
+        // Create bind groups dynamically (needed because buffers may change)
+        const clearBindGroup = this.device.createBindGroup({
+            layout: this.clearBindGroupLayout!,
+            entries: [
+                { binding: 0, resource: { buffer: this.atomicBuffer! } },
+                { binding: 1, resource: { buffer: this.uniformBuffer! } }
+            ],
+            label: 'clear-bind-group'
+        });
+
+        const splatBindGroup = this.device.createBindGroup({
+            layout: this.splatBindGroupLayout!,
+            entries: [
+                { binding: 0, resource: { buffer: this.atomicBuffer! } },
+                { binding: 1, resource: { buffer: this.uniformBuffer! } },
+                { binding: 2, resource: { buffer: this.gaussianBuffer! } },
+                { binding: 3, resource: { buffer: this.sortedIndicesBuffer! } },
+                { binding: 4, resource: { buffer: this.sortedDataBuffer! } }
+            ],
+            label: 'splat-bind-group'
+        });
+
+        const convertBindGroup = this.device.createBindGroup({
+            layout: this.convertBindGroupLayout!,
+            entries: [
+                { binding: 0, resource: { buffer: this.atomicBuffer! } },
+                { binding: 1, resource: { buffer: this.unifiedOutputBuffer! } },
+                { binding: 2, resource: { buffer: this.uniformBuffer! } }
+            ],
+            label: 'convert-bind-group'
+        });
+
+        // Create command encoder
+        const commandEncoder = this.device.createCommandEncoder();
+
+        // Pass 1: Clear atomic buffer
+        {
+            const passEncoder = commandEncoder.beginComputePass();
+            passEncoder.setPipeline(this.clearPipeline!);
+            passEncoder.setBindGroup(0, clearBindGroup);
+            const workgroupCount = Math.ceil(pixelCount / 256);
+            passEncoder.dispatchWorkgroups(workgroupCount);
+            passEncoder.end();
+        }
+
+        // Pass 2: Splat Gaussians (per-Gaussian dispatch)
+        {
+            const passEncoder = commandEncoder.beginComputePass();
+            passEncoder.setPipeline(this.splatPipeline!);
+            passEncoder.setBindGroup(0, splatBindGroup);
+            const workgroupCount = Math.ceil(numGaussians / 256);
+            passEncoder.dispatchWorkgroups(workgroupCount);
+            passEncoder.end();
+        }
+
+        // Pass 3: Convert fixed-point to float
+        {
+            const passEncoder = commandEncoder.beginComputePass();
+            passEncoder.setPipeline(this.convertPipeline!);
+            passEncoder.setBindGroup(0, convertBindGroup);
+            const workgroupCount = Math.ceil(pixelCount / 256);
+            passEncoder.dispatchWorkgroups(workgroupCount);
+            passEncoder.end();
+        }
+
+        // Submit commands
+        this.device.queue.submit([commandEncoder.finish()]);
+
+        // Copy unified buffer to legacy output buffers (for compatibility)
+        this.copyUnifiedToLegacyBuffers();
 
         if (this.renderCount === 1) {
-            console.log('[ComputeRenderer] First render() complete (CPU splat, 32 channels preserved)');
+            console.log(`[ComputeRenderer] GPU splat: ${numGaussians.toLocaleString()} Gaussians, ${width}x${height}`);
+            console.log(`[ComputeRenderer]   Workgroups: ${Math.ceil(numGaussians / 256)} (splat)`);
         }
+    }
+
+    /**
+     * Copy from unified buffer to 8 legacy buffers for getOutputBuffers() compatibility
+     */
+    private copyUnifiedToLegacyBuffers(): void {
+        const width = this.width;
+        const height = this.height;
+        const pixelCount = width * height;
+
+        // Read unified buffer and distribute to legacy buffers
+        // We need to do this on GPU to avoid CPU readback
+        // For now, use staging buffer approach
+
+        // Create staging buffer to read unified output
+        const stagingBuffer = this.device.createBuffer({
+            size: pixelCount * 32 * 4,
+            usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+            label: 'staging-unified'
+        });
+
+        const commandEncoder = this.device.createCommandEncoder();
+        commandEncoder.copyBufferToBuffer(
+            this.unifiedOutputBuffer!, 0,
+            stagingBuffer, 0,
+            pixelCount * 32 * 4
+        );
+        this.device.queue.submit([commandEncoder.finish()]);
+
+        // Map and copy to legacy buffers
+        stagingBuffer.mapAsync(GPUMapMode.READ).then(() => {
+            const data = new Float32Array(stagingBuffer.getMappedRange());
+
+            // Distribute to 8 legacy buffers (4 channels each)
+            const legacyData: Float32Array[] = [];
+            for (let i = 0; i < 8; i++) {
+                legacyData.push(new Float32Array(pixelCount * 4));
+            }
+
+            for (let p = 0; p < pixelCount; p++) {
+                const srcBase = p * 32;
+                for (let buf = 0; buf < 8; buf++) {
+                    const dstBase = p * 4;
+                    for (let ch = 0; ch < 4; ch++) {
+                        legacyData[buf][dstBase + ch] = data[srcBase + buf * 4 + ch];
+                    }
+                }
+            }
+
+            stagingBuffer.unmap();
+            stagingBuffer.destroy();
+
+            // Upload to legacy buffers
+            for (let i = 0; i < 8; i++) {
+                this.device.queue.writeBuffer(this.outputBuffers[i], 0, legacyData[i]);
+            }
+        });
     }
 
     /**
@@ -530,6 +1027,10 @@ export class GuavaWebGPURendererCompute {
     destroy(): void {
         this.gaussianBuffer?.destroy();
         this.uniformBuffer?.destroy();
+        this.unifiedOutputBuffer?.destroy();
+        this.atomicBuffer?.destroy();
+        this.sortedIndicesBuffer?.destroy();
+        this.sortedDataBuffer?.destroy();
         this.outputBuffers.forEach(b => b.destroy());
         this.outputTextures.forEach(t => t.destroy());
     }

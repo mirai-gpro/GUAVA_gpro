@@ -129,9 +129,9 @@ export class GVRM {
       useWebGPU: false  // WASM使用（安定性優先）
     });
     
-    console.log('[GVRM] Created (v85: UV Feature Mapper Fix 2026-01-26)');
+    console.log('[GVRM] Created (v86: GPU Compute Splatting 2026-01-27)');
     console.log('[GVRM] ════════════════════════════════════════════════════');
-    console.log('[GVRM] 🔧 BUILD v85 - Fixed UV Feature Mapper: use full PLY mesh');
+    console.log('[GVRM] 🔧 BUILD v86 - GPU compute splatting with unified buffer');
     console.log('[GVRM] ════════════════════════════════════════════════════');
   }
   
