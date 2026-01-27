@@ -167,16 +167,18 @@ export class GVRM {
 
       // v86: Gaussianバッファ用にストレージバッファサイズ上限を引き上げ
       // 1M+ Gaussians × 44 floats × 4 bytes ≈ 186MB > default 128MB
-      const neededStorageSize = 256 * 1024 * 1024;  // 256MB
+      const neededStorageSize = 512 * 1024 * 1024;  // 512MB
       if (adapterLimits.maxStorageBufferBindingSize >= neededStorageSize) {
         (requiredLimits as any).maxStorageBufferBindingSize = neededStorageSize;
         console.log(`[GVRM]   Requesting maxStorageBufferBindingSize: ${neededStorageSize / 1024 / 1024}MB`);
       } else {
+        // アダプターの限界まで要求
+        (requiredLimits as any).maxStorageBufferBindingSize = adapterLimits.maxStorageBufferBindingSize;
         console.warn(`[GVRM]   ⚠️ Adapter maxStorageBufferBindingSize: ${adapterLimits.maxStorageBufferBindingSize / 1024 / 1024}MB (need ${neededStorageSize / 1024 / 1024}MB)`);
       }
 
       // maxBufferSize も引き上げ
-      const neededBufferSize = 256 * 1024 * 1024;
+      const neededBufferSize = 512 * 1024 * 1024;
       if (adapterLimits.maxBufferSize >= neededBufferSize) {
         (requiredLimits as any).maxBufferSize = neededBufferSize;
         console.log(`[GVRM]   Requesting maxBufferSize: ${neededBufferSize / 1024 / 1024}MB`);
@@ -495,6 +497,39 @@ export class GVRM {
         );
 
         console.log(`[GVRM]   ✅ UV Decoder output: ${uvGaussianOutput.uvCount.toLocaleString()} UV Gaussians`);
+
+        // v86: Apply activation functions to UV decoder raw outputs
+        // The ONNX model outputs raw values; activations must be applied here
+        console.log('[GVRM]   Applying UV Gaussian activations...');
+
+        // Opacity: sigmoid activation → [0, 1]
+        const uvOpacity = uvGaussianOutput.opacity;
+        for (let i = 0; i < uvOpacity.length; i++) {
+          uvOpacity[i] = 1.0 / (1.0 + Math.exp(-uvOpacity[i]));
+        }
+        const opStats = this.analyzeArray(uvOpacity);
+        console.log(`[GVRM]     Opacity (sigmoid): [${opStats.min.toFixed(4)}, ${opStats.max.toFixed(4)}], mean=${opStats.mean.toFixed(4)}`);
+
+        // Scale: exp activation × 0.05 → positive values in reasonable range
+        // Python GUAVA: scales = torch.sigmoid(scales) * 0.05 (template)
+        // For UV: exp gives positive values, then scale down to match template range
+        const uvScale = uvGaussianOutput.scale;
+        for (let i = 0; i < uvScale.length; i++) {
+          uvScale[i] = Math.exp(uvScale[i]) * 0.05;
+        }
+        const scStats = this.analyzeArray(uvScale);
+        console.log(`[GVRM]     Scale (exp*0.05): [${scStats.min.toFixed(6)}, ${scStats.max.toFixed(6)}], mean=${scStats.mean.toFixed(6)}`);
+
+        // Rotation: normalize quaternion
+        const uvRot = uvGaussianOutput.rotation;
+        for (let i = 0; i < uvRot.length; i += 4) {
+          const q0 = uvRot[i], q1 = uvRot[i+1], q2 = uvRot[i+2], q3 = uvRot[i+3];
+          const norm = Math.sqrt(q0*q0 + q1*q1 + q2*q2 + q3*q3) || 1;
+          uvRot[i] = q0 / norm;
+          uvRot[i+1] = q1 / norm;
+          uvRot[i+2] = q2 / norm;
+          uvRot[i+3] = q3 / norm;
+        }
 
         // Step 4: Transform UV Gaussians to world space
         console.log('[GVRM]   Step 4: Transforming UV Gaussians to world space...');
