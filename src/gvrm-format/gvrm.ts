@@ -948,6 +948,13 @@ export class GVRM {
       } else {
         // Neural Refiner (SimpleUNet): 32ch特徴マップを[0,1]に正規化して入力
         const stats = this.analyzeArray(coarseFeatures);
+
+        // Guard: skip refiner if GPU readback returned degenerate data
+        if (stats.min === stats.max || !isFinite(stats.min) || !isFinite(stats.max)) {
+          console.warn(`[GVRM] ⚠️ Degenerate coarse features (min=max=${stats.min.toFixed(4)}), skipping frame`);
+          this.frameId = requestAnimationFrame(this.renderFrame);
+          return;
+        }
         if (this.frameCount === 1) {
           console.log(`[GVRM] Coarse features before normalization: [${stats.min.toFixed(4)}, ${stats.max.toFixed(4)}]`);
         }
@@ -1047,7 +1054,10 @@ export class GVRM {
         console.warn('[GVRM] Render error (device lost):', msg);
         this.deviceLost = true;
         this.isRunning = false;
-        // Recovery will be triggered by visibilitychange handler
+        // Trigger recovery immediately if tab is visible
+        if (document.visibilityState === 'visible') {
+          this.recoverFromDeviceLost();
+        }
         return;
       }
       console.error('[GVRM] Render error:', error);
