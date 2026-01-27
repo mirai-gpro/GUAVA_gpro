@@ -777,70 +777,10 @@ export class GuavaWebGPURendererCompute {
         // Submit commands
         this.device.queue.submit([commandEncoder.finish()]);
 
-        // Copy unified buffer to legacy output buffers (for compatibility)
-        this.copyUnifiedToLegacyBuffers();
-
         if (this.renderCount === 1) {
             console.log(`[ComputeRenderer] GPU splat: ${numGaussians.toLocaleString()} Gaussians, ${width}x${height}`);
             console.log(`[ComputeRenderer]   Workgroups: ${Math.ceil(numGaussians / 256)} (splat)`);
         }
-    }
-
-    /**
-     * Copy from unified buffer to 8 legacy buffers for getOutputBuffers() compatibility
-     */
-    private copyUnifiedToLegacyBuffers(): void {
-        const width = this.width;
-        const height = this.height;
-        const pixelCount = width * height;
-
-        // Read unified buffer and distribute to legacy buffers
-        // We need to do this on GPU to avoid CPU readback
-        // For now, use staging buffer approach
-
-        // Create staging buffer to read unified output
-        const stagingBuffer = this.device.createBuffer({
-            size: pixelCount * 32 * 4,
-            usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-            label: 'staging-unified'
-        });
-
-        const commandEncoder = this.device.createCommandEncoder();
-        commandEncoder.copyBufferToBuffer(
-            this.unifiedOutputBuffer!, 0,
-            stagingBuffer, 0,
-            pixelCount * 32 * 4
-        );
-        this.device.queue.submit([commandEncoder.finish()]);
-
-        // Map and copy to legacy buffers
-        stagingBuffer.mapAsync(GPUMapMode.READ).then(() => {
-            const data = new Float32Array(stagingBuffer.getMappedRange());
-
-            // Distribute to 8 legacy buffers (4 channels each)
-            const legacyData: Float32Array[] = [];
-            for (let i = 0; i < 8; i++) {
-                legacyData.push(new Float32Array(pixelCount * 4));
-            }
-
-            for (let p = 0; p < pixelCount; p++) {
-                const srcBase = p * 32;
-                for (let buf = 0; buf < 8; buf++) {
-                    const dstBase = p * 4;
-                    for (let ch = 0; ch < 4; ch++) {
-                        legacyData[buf][dstBase + ch] = data[srcBase + buf * 4 + ch];
-                    }
-                }
-            }
-
-            stagingBuffer.unmap();
-            stagingBuffer.destroy();
-
-            // Upload to legacy buffers
-            for (let i = 0; i < 8; i++) {
-                this.device.queue.writeBuffer(this.outputBuffers[i], 0, legacyData[i]);
-            }
-        });
     }
 
     /**
@@ -1022,6 +962,14 @@ export class GuavaWebGPURendererCompute {
 
     public getOutputBuffers(): GPUBuffer[] {
         return this.outputBuffers;
+    }
+
+    /**
+     * v86: Get the unified output buffer (32 channels interleaved per pixel)
+     * Layout: [pixel0_ch0, pixel0_ch1, ..., pixel0_ch31, pixel1_ch0, ...]
+     */
+    public getUnifiedOutputBuffer(): GPUBuffer | null {
+        return this.unifiedOutputBuffer;
     }
 
     destroy(): void {

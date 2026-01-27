@@ -155,7 +155,7 @@ export class GVRM {
       // 8つのRGBA16Floatテクスチャ用に制限を上げる
       const requiredLimits: GPUDeviceLimits = {};
       const adapterLimits = adapter.limits;
-      
+
       // maxColorAttachmentBytesPerSample: 8 * RGBA16Float = 8 * 8 = 64 bytes必要
       if (adapterLimits.maxColorAttachmentBytesPerSample >= 128) {
         (requiredLimits as any).maxColorAttachmentBytesPerSample = 128;
@@ -163,6 +163,23 @@ export class GVRM {
       } else if (adapterLimits.maxColorAttachmentBytesPerSample >= 64) {
         (requiredLimits as any).maxColorAttachmentBytesPerSample = 64;
         console.log('[GVRM]   Requesting maxColorAttachmentBytesPerSample: 64');
+      }
+
+      // v86: Gaussianバッファ用にストレージバッファサイズ上限を引き上げ
+      // 1M+ Gaussians × 44 floats × 4 bytes ≈ 186MB > default 128MB
+      const neededStorageSize = 256 * 1024 * 1024;  // 256MB
+      if (adapterLimits.maxStorageBufferBindingSize >= neededStorageSize) {
+        (requiredLimits as any).maxStorageBufferBindingSize = neededStorageSize;
+        console.log(`[GVRM]   Requesting maxStorageBufferBindingSize: ${neededStorageSize / 1024 / 1024}MB`);
+      } else {
+        console.warn(`[GVRM]   ⚠️ Adapter maxStorageBufferBindingSize: ${adapterLimits.maxStorageBufferBindingSize / 1024 / 1024}MB (need ${neededStorageSize / 1024 / 1024}MB)`);
+      }
+
+      // maxBufferSize も引き上げ
+      const neededBufferSize = 256 * 1024 * 1024;
+      if (adapterLimits.maxBufferSize >= neededBufferSize) {
+        (requiredLimits as any).maxBufferSize = neededBufferSize;
+        console.log(`[GVRM]   Requesting maxBufferSize: ${neededBufferSize / 1024 / 1024}MB`);
       }
       
       this.gpuDevice = await adapter.requestDevice({
@@ -621,8 +638,14 @@ export class GVRM {
         this.gsComputeRenderer.sort();
         this.gsComputeRenderer.render();
 
-        const outputBuffers = this.gsComputeRenderer.getOutputBuffers();
-        coarseFeatures = await this.convertBuffersToFloat32Array(outputBuffers);
+        // v86: Try unified buffer first (GPU splatting), fall back to legacy buffers (CPU splatting)
+        const unifiedBuffer = this.gsComputeRenderer.getUnifiedOutputBuffer();
+        if (unifiedBuffer) {
+          coarseFeatures = await this.convertUnifiedBufferToFloat32Array(unifiedBuffer);
+        } else {
+          const outputBuffers = this.gsComputeRenderer.getOutputBuffers();
+          coarseFeatures = await this.convertBuffersToFloat32Array(outputBuffers);
+        }
 
         if (this.frameCount === 1) {
           console.log('[GVRM] 🚀 Using Compute Renderer (all 32 channels preserved)');
@@ -999,6 +1022,63 @@ export class GVRM {
    * Compute Renderer用: ストレージバッファから32チャンネルを読み出し
    * Practical Rendererと異なり、全32チャンネルが正しく保持されている
    */
+  /**
+   * v86: Read unified output buffer (32ch interleaved per pixel) into CHW Float32Array
+   * Unified layout: [pixel0_ch0..ch31, pixel1_ch0..ch31, ...]
+   * Output layout: CHW [ch0_pixel0..pixelN, ch1_pixel0..pixelN, ...]
+   */
+  private async convertUnifiedBufferToFloat32Array(buffer: GPUBuffer): Promise<Float32Array> {
+    if (!this.gpuDevice) throw new Error('GPU device not initialized');
+
+    const width = 512, height = 512;
+    const pixelCount = width * height;
+    const bufferSize = pixelCount * 32 * 4;
+
+    if (!this.coarseFeatureArray || this.coarseFeatureArray.length !== pixelCount * 32) {
+      this.coarseFeatureArray = new Float32Array(pixelCount * 32);
+    }
+
+    // Create readback buffer
+    const readback = this.gpuDevice.createBuffer({
+      size: bufferSize,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+    });
+
+    const commandEncoder = this.gpuDevice.createCommandEncoder();
+    commandEncoder.copyBufferToBuffer(buffer, 0, readback, 0, bufferSize);
+    this.gpuDevice.queue.submit([commandEncoder.finish()]);
+
+    await readback.mapAsync(GPUMapMode.READ);
+    const source = new Float32Array(readback.getMappedRange());
+
+    // Convert from interleaved (pixel-major) to CHW (channel-major)
+    let globalMin = Infinity, globalMax = -Infinity, nanCount = 0;
+
+    for (let p = 0; p < pixelCount; p++) {
+      const srcBase = p * 32;
+      for (let ch = 0; ch < 32; ch++) {
+        const val = source[srcBase + ch];
+        const dstIdx = ch * pixelCount + p;
+        this.coarseFeatureArray[dstIdx] = val;
+
+        if (isNaN(val)) nanCount++;
+        else {
+          if (val < globalMin) globalMin = val;
+          if (val > globalMax) globalMax = val;
+        }
+      }
+    }
+
+    if (this.frameCount === 1) {
+      console.log(`[GVRM] Unified buffer stats (32 channels): [${globalMin.toFixed(4)}, ${globalMax.toFixed(4)}] NaN=${nanCount}`);
+    }
+
+    readback.unmap();
+    readback.destroy();
+
+    return this.coarseFeatureArray;
+  }
+
   private async convertBuffersToFloat32Array(buffers: GPUBuffer[]): Promise<Float32Array> {
     if (!this.gpuDevice) {
       throw new Error('GPU device not initialized');
