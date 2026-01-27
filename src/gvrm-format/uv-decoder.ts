@@ -477,10 +477,10 @@ export class UVDecoder {
       // Opacity (1ch)
       opacityOut[i] = getChannelValue(opacity, 0, v, u, 1);
       
-      // Scale (3ch) - apply exp() to convert from log-space to positive values
-      scaleOut[i * 3 + 0] = Math.exp(getChannelValue(scale, 0, v, u, 3));
-      scaleOut[i * 3 + 1] = Math.exp(getChannelValue(scale, 1, v, u, 3));
-      scaleOut[i * 3 + 2] = Math.exp(getChannelValue(scale, 2, v, u, 3));
+      // Scale (3ch) - raw log-space values; exp() activation applied in gvrm.ts
+      scaleOut[i * 3 + 0] = getChannelValue(scale, 0, v, u, 3);
+      scaleOut[i * 3 + 1] = getChannelValue(scale, 1, v, u, 3);
+      scaleOut[i * 3 + 2] = getChannelValue(scale, 2, v, u, 3);
       
       // Rotation (4ch)
       rotationOut[i * 4 + 0] = getChannelValue(rotation, 0, v, u, 4);
