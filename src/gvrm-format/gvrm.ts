@@ -108,6 +108,9 @@ export class GVRM {
   private isRunning: boolean = false;
   private frameId: number | null = null;
   private frameCount: number = 0;
+  private deviceLost: boolean = false;
+  private recovering: boolean = false;
+  private boundVisibilityHandler: (() => void) | null = null;
   
   constructor(config?: GVRMConfig) {
     if (config) {
@@ -187,6 +190,8 @@ export class GVRM {
       this.gpuDevice = await adapter.requestDevice({
         requiredLimits: requiredLimits as any
       });
+      this.setupDeviceLostHandler();
+      this.setupVisibilityHandler();
       this.initReadbackBuffers(512, 512);
       console.log('[GVRM]   ✅ WebGPU ready');
       
@@ -644,6 +649,106 @@ export class GVRM {
     }
   }
   
+  // ===== GPU Device Recovery =====
+
+  private setupDeviceLostHandler(): void {
+    if (!this.gpuDevice) return;
+    this.gpuDevice.lost.then((info) => {
+      console.warn(`[GVRM] ⚠️ GPU device lost: ${info.message} (reason: ${info.reason})`);
+      this.deviceLost = true;
+      this.isRunning = false;
+      if (this.frameId !== null) {
+        cancelAnimationFrame(this.frameId);
+        this.frameId = null;
+      }
+    });
+  }
+
+  private setupVisibilityHandler(): void {
+    this.boundVisibilityHandler = () => this.onVisibilityChange();
+    document.addEventListener('visibilitychange', this.boundVisibilityHandler);
+  }
+
+  private onVisibilityChange(): void {
+    if (document.visibilityState === 'hidden') {
+      // Tab going to background: pause render loop to avoid TDR
+      console.log('[GVRM] Tab hidden - pausing render loop');
+      this.isRunning = false;
+      if (this.frameId !== null) {
+        cancelAnimationFrame(this.frameId);
+        this.frameId = null;
+      }
+    } else if (document.visibilityState === 'visible') {
+      console.log('[GVRM] Tab visible - resuming');
+      if (this.deviceLost) {
+        console.log('[GVRM] Device was lost - starting recovery...');
+        this.recoverFromDeviceLost();
+      } else if (this.initialized && !this.isRunning) {
+        this.isRunning = true;
+        this.renderFrame();
+      }
+    }
+  }
+
+  private async recoverFromDeviceLost(): Promise<void> {
+    if (this.recovering) return;
+    this.recovering = true;
+
+    try {
+      console.log('[GVRM] 🔄 Recovering GPU device...');
+
+      // Cleanup old GPU resources
+      this.readbackBuffers.forEach(b => { try { b.destroy(); } catch (_) {} });
+      this.readbackBuffers = [];
+      if (this.gsComputeRenderer) {
+        try { this.gsComputeRenderer.destroy(); } catch (_) {}
+        this.gsComputeRenderer = null;
+      }
+      if (this.gsCoarseRenderer) {
+        try { this.gsCoarseRenderer.destroy(); } catch (_) {}
+        this.gsCoarseRenderer = null;
+      }
+
+      // Request new device
+      if (!navigator.gpu) throw new Error('WebGPU not supported');
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) throw new Error('No GPU adapter');
+
+      const requiredLimits: any = {};
+      const adapterLimits = adapter.limits;
+
+      if (adapterLimits.maxColorAttachmentBytesPerSample >= 128) {
+        requiredLimits.maxColorAttachmentBytesPerSample = 128;
+      }
+      const neededSize = 512 * 1024 * 1024;
+      if (adapterLimits.maxStorageBufferBindingSize >= neededSize) {
+        requiredLimits.maxStorageBufferBindingSize = neededSize;
+      }
+      if (adapterLimits.maxBufferSize >= neededSize) {
+        requiredLimits.maxBufferSize = neededSize;
+      }
+
+      this.gpuDevice = await adapter.requestDevice({ requiredLimits });
+      this.deviceLost = false;
+      this.setupDeviceLostHandler();
+
+      console.log('[GVRM] ✅ New GPU device acquired');
+
+      // Rebuild renderer with existing Gaussian data
+      this.initReadbackBuffers(512, 512);
+      await this.setupRenderer();
+      this.frameCount = 0;
+
+      console.log('[GVRM] ✅ GPU recovery complete - resuming render');
+      this.isRunning = true;
+      this.renderFrame();
+    } catch (error) {
+      console.error('[GVRM] ❌ GPU recovery failed:', error);
+    } finally {
+      this.recovering = false;
+    }
+  }
+
   /**
    * Render loop (SimpleUNet Refiner版)
    * - 入力: Gaussian出力を[0, 1]に正規化
@@ -937,6 +1042,14 @@ export class GVRM {
       }
 
     } catch (error) {
+      const msg = (error as Error)?.message || '';
+      if (msg.includes('lost') || msg.includes('destroyed') || msg.includes('Device')) {
+        console.warn('[GVRM] Render error (device lost):', msg);
+        this.deviceLost = true;
+        this.isRunning = false;
+        // Recovery will be triggered by visibilitychange handler
+        return;
+      }
       console.error('[GVRM] Render error:', error);
       this.isRunning = false;
       return;
@@ -1460,7 +1573,11 @@ export class GVRM {
       cancelAnimationFrame(this.frameId);
       this.frameId = null;
     }
-    
+    if (this.boundVisibilityHandler) {
+      document.removeEventListener('visibilitychange', this.boundVisibilityHandler);
+      this.boundVisibilityHandler = null;
+    }
+
     this.readbackBuffers.forEach(b => b.destroy());
     this.gsCoarseRenderer?.destroy();
     this.webglDisplay?.dispose();
