@@ -4,7 +4,7 @@
  * SimpleUNet Neural Refiner (38MB)
  * StyleUNetのUNet部分を使用した軽量モデル
  *
- * 入力: 32ch Feature Map [1, 32, 512, 512] (値域 [0, 1] に正規化必須)
+ * 入力: 32ch Feature Map [1, 32, 512, 512] (ラスタライザ出力をそのまま渡す、正規化不要)
  * 出力: RGB画像 [1, 3, 512, 512] (クランプ [0, 1]、sigmoidなし)
  *
  * 使い方:
@@ -46,7 +46,7 @@ export class RFDNRefiner {
 
     console.log('[NeuralRefiner] Initializing...');
     console.log('[NeuralRefiner]   Model: simpleunet_trained.onnx (38MB)');
-    console.log('[NeuralRefiner]   Input: 32ch × 512 × 512 (normalized to [0,1])');
+    console.log('[NeuralRefiner]   Input: 32ch × 512 × 512 (raw rasterizer output, no normalization)');
     console.log('[NeuralRefiner]   Output: RGB × 512 × 512');
 
     try {

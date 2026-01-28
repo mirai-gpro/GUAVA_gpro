@@ -275,7 +275,7 @@ export class GVRM {
       console.log('[GVRM]   UV Gaussians: ', this.uvGaussians?.vertexCount || 0);
       console.log('[GVRM]   Total Gaussians: ', 
         (this.templateGaussians?.vertexCount || 0) + (this.uvGaussians?.vertexCount || 0));
-      console.log('[GVRM]   🚀 SimpleUNet Refiner: Input normalized to [0,1]');
+      console.log('[GVRM]   🚀 SimpleUNet Refiner: Raw input (no normalization)');
       
       this.renderFrame();
       
@@ -948,7 +948,7 @@ export class GVRM {
           // ======== END RGB ANALYSIS ========
         }
       } else {
-        // Neural Refiner (SimpleUNet): 32ch特徴マップを[0,1]に正規化して入力
+        // Neural Refiner (SimpleUNet): 32ch特徴マップをそのまま入力（正規化なし）
         const stats = this.analyzeArray(coarseFeatures);
 
         // Guard: skip refiner if GPU readback returned degenerate data
@@ -1043,7 +1043,7 @@ export class GVRM {
         console.log(`  Coarse features (32ch): min=${coarseStats.min.toFixed(4)}, max=${coarseStats.max.toFixed(4)}`);
         console.log(`  Display RGB: min=${displayStats.min.toFixed(4)}, max=${displayStats.max.toFixed(4)}`);
         if (!this.debugBypassRFDN) {
-          console.log(`  🚀 SimpleUNet Refiner: Input normalized to [0,1], output is final RGB`);
+          console.log(`  🚀 SimpleUNet Refiner: Raw input (no normalization), output is final RGB`);
         }
       }
 
