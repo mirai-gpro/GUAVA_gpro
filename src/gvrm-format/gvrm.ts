@@ -515,15 +515,17 @@ export class GVRM {
         const opStats = this.analyzeArray(uvOpacity);
         console.log(`[GVRM]     Opacity (sigmoid): [${opStats.min.toFixed(4)}, ${opStats.max.toFixed(4)}], mean=${opStats.mean.toFixed(4)}`);
 
-        // Scale: exp activation × 0.05 → positive values in reasonable range
-        // Python GUAVA: scales = torch.sigmoid(scales) * 0.05 (template)
-        // For UV: exp gives positive values, then scale down to match template range
+        // Scale: exp activation only (no extra multiplier)
+        // PLY stores log(raw_scale * face_scaling), so exp() recovers the original value.
+        // face_scaling (average edge length) is already baked into the PLY data
+        // (see ubody_gaussian.py:243,283 — _uv_scaling_cano = _uv_scaling * face_scaling_nn)
+        // The previous * 0.05 was an incorrect extra multiplier not present in Python.
         const uvScale = uvGaussianOutput.scale;
         for (let i = 0; i < uvScale.length; i++) {
-          uvScale[i] = Math.exp(uvScale[i]) * 0.05;
+          uvScale[i] = Math.exp(uvScale[i]);
         }
         const scStats = this.analyzeArray(uvScale);
-        console.log(`[GVRM]     Scale (exp*0.05): [${scStats.min.toFixed(6)}, ${scStats.max.toFixed(6)}], mean=${scStats.mean.toFixed(6)}`);
+        console.log(`[GVRM]     Scale (exp): [${scStats.min.toFixed(6)}, ${scStats.max.toFixed(6)}], mean=${scStats.mean.toFixed(6)}`);
 
         // Rotation: normalize quaternion
         const uvRot = uvGaussianOutput.rotation;
@@ -956,18 +958,15 @@ export class GVRM {
           return;
         }
         if (this.frameCount === 1) {
-          console.log(`[GVRM] Coarse features before normalization: [${stats.min.toFixed(4)}, ${stats.max.toFixed(4)}]`);
+          console.log(`[GVRM] Coarse features (raw, no normalization): [${stats.min.toFixed(4)}, ${stats.max.toFixed(4)}]`);
         }
 
-        // 全32チャンネルを[0, 1]に正規化
-        const normalizedFeatures = this.normalizeToZeroOne(coarseFeatures, this.frameCount === 1);
-
-        if (this.frameCount === 1) {
-          const normStats = this.analyzeArray(normalizedFeatures);
-          console.log(`[GVRM] Coarse features after normalization: [${normStats.min.toFixed(4)}, ${normStats.max.toFixed(4)}]`);
-        }
-
-        displayRGB = await this.neuralRefiner.process(normalizedFeatures);
+        // Pass raw coarse features directly to Refiner — no normalization.
+        // Python pipeline (gaussian_render.py:73) passes rasterizer output directly:
+        //   refine_images = self.nerual_refiner(rendered_images)
+        // The previous normalizeToZeroOne was not present in the Python pipeline
+        // and destroyed the learned feature distribution.
+        displayRGB = await this.neuralRefiner.process(coarseFeatures);
 
         // 🔍 v77: Refiner output debug
         if (this.frameCount === 1) {
