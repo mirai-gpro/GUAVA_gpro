@@ -85,7 +85,7 @@ app = modal.App("uv-styleunet-data-extraction")
     gpu="L4",
     timeout=4 * 3600,
     volumes={
-        "/root/ehm_output": ehm_volume,
+        "/root/EHM_results": ehm_volume,
         "/root/GUAVA/assets": weights_volume,
         "/root/distill_data": output_volume,
     },
@@ -192,7 +192,7 @@ def extract_uv_styleunet_data(num_frames: int = 100, num_angles: int = 9):
     # Load EHM Tracking Data
     # ============================================================
 
-    ehm_data_path = Path("/root/ehm_output")
+    ehm_data_path = Path("/root/EHM_results/processed_data")
     tracking_dirs = list(ehm_data_path.glob("**/tracked_data"))
 
     if not tracking_dirs:
