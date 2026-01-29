@@ -380,21 +380,20 @@ with torch.no_grad():
     print(f"  Input extra_style: {dummy_extra_style.shape}")
     print(f"  Output: {output.shape}")
 
-print("\nExporting to ONNX...")
+print("\nExporting to ONNX (legacy mode for ModulatedConv2d compatibility)...")
+# Use legacy export without dynamic batch (batch=1 fixed)
+# ModulatedConv2d uses groups=batch which doesn't work with dynamic axes
 torch.onnx.export(
     model,
     (dummy_uv_features, dummy_extra_style),
     "uv_styleunet.onnx",
     export_params=True,
-    opset_version=17,
+    opset_version=14,  # Use older opset for better compatibility
     input_names=['uv_features', 'extra_style'],
     output_names=['output'],
-    dynamic_axes={
-        'uv_features': {0: 'batch'},
-        'extra_style': {0: 'batch'},
-        'output': {0: 'batch'}
-    },
-    do_constant_folding=True
+    # No dynamic_axes - batch size fixed to 1
+    do_constant_folding=True,
+    dynamo=False  # Force legacy export
 )
 
 size_mb = os.path.getsize('uv_styleunet.onnx') / 1024 / 1024
