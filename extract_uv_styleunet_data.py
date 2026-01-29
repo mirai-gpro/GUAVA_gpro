@@ -189,54 +189,59 @@ def extract_uv_styleunet_data(num_frames: int = 100, num_angles: int = 9):
     print("Hooks registered on uv_feature_decoder and uv_style_mapping")
 
     # ============================================================
-    # Load EHM Tracking Data
+    # Load EHM Tracking Data (generate_ply_cloud.py と同じ方法)
     # ============================================================
 
-    ehm_data_path = Path("/root/EHM_results/processed_data")
-    tracking_dirs = list(ehm_data_path.glob("**/tracked_data"))
+    from omegaconf import OmegaConf
+    from dataset import TrackedData_infer
+    from utils.general_utils import ConfigDict, add_extra_cfgs
 
-    if not tracking_dirs:
-        print("No tracking data found!")
+    # find_tracking_data 関数 (generate_ply_cloud.py からコピー)
+    def find_tracking_data(base_path, max_depth=3):
+        if max_depth <= 0:
+            return None
+        tracking_file = os.path.join(base_path, 'optim_tracking_ehm.pkl')
+        if os.path.exists(tracking_file):
+            return base_path
+        if os.path.isdir(base_path):
+            for item in os.listdir(base_path):
+                item_path = os.path.join(base_path, item)
+                if os.path.isdir(item_path):
+                    result = find_tracking_data(item_path, max_depth - 1)
+                    if result:
+                        return result
+        return None
+
+    search_path = "/root/EHM_results/processed_data"
+    data_path = None
+
+    if os.path.exists(search_path):
+        data_path = find_tracking_data(search_path)
+        if data_path:
+            print(f"Found tracking data: {data_path}")
+        else:
+            print(f"No optim_tracking_ehm.pkl found in {search_path}")
+            return {"error": "No tracking data"}
+    else:
+        print(f"EHM results directory not found: {search_path}")
         return {"error": "No tracking data"}
 
-    print(f"Found {len(tracking_dirs)} tracking directories")
+    # Dataset設定
+    model_path = "assets/GUAVA"
+    model_config_path = os.path.join(model_path, 'config.yaml')
+    meta_cfg_dataset = ConfigDict(model_config_path=model_config_path)
+    meta_cfg_dataset = add_extra_cfgs(meta_cfg_dataset)
 
-    # ============================================================
-    # Camera Angle Generation
-    # ============================================================
+    meta_cfg_dataset['DATASET']['data_path'] = data_path
+    OmegaConf.set_readonly(meta_cfg_dataset._dot_config, False)
+    meta_cfg_dataset._dot_config.DATASET.data_path = data_path
+    OmegaConf.set_readonly(meta_cfg_dataset._dot_config, True)
 
-    def generate_camera_angles(base_w2c, num_angles=9):
-        """Generate multiple camera viewpoints"""
-        angles = [base_w2c]
+    test_dataset = TrackedData_infer(cfg=meta_cfg_dataset, split='test', device=device, test_full=True)
+    print(f"Dataset loaded: {len(test_dataset)} samples")
 
-        if num_angles <= 1:
-            return angles
-
-        # Rotation angles
-        rotation_degrees = [-30, -15, 15, 30]  # Yaw
-        tilt_degrees = [-15, 15]  # Pitch
-
-        for deg in rotation_degrees[:min(num_angles-1, len(rotation_degrees))]:
-            rad = np.radians(deg)
-            rot_y = torch.tensor([
-                [np.cos(rad), 0, np.sin(rad), 0],
-                [0, 1, 0, 0],
-                [-np.sin(rad), 0, np.cos(rad), 0],
-                [0, 0, 0, 1]
-            ], dtype=base_w2c.dtype, device=base_w2c.device)
-            angles.append(torch.matmul(rot_y, base_w2c))
-
-        for deg in tilt_degrees[:max(0, num_angles - 1 - len(rotation_degrees))]:
-            rad = np.radians(deg)
-            rot_x = torch.tensor([
-                [1, 0, 0, 0],
-                [0, np.cos(rad), -np.sin(rad), 0],
-                [0, np.sin(rad), np.cos(rad), 0],
-                [0, 0, 0, 1]
-            ], dtype=base_w2c.dtype, device=base_w2c.device)
-            angles.append(torch.matmul(rot_x, base_w2c))
-
-        return angles[:num_angles]
+    video_ids = list(test_dataset.videos_info.keys())
+    print(f"Found {len(video_ids)} videos")
 
     # ============================================================
     # Data Extraction Loop
@@ -244,97 +249,53 @@ def extract_uv_styleunet_data(num_frames: int = 100, num_angles: int = 9):
 
     sample_count = 0
 
-    for tracking_dir in tracking_dirs:
+    for video_id in video_ids:
         if sample_count >= num_frames:
             break
 
-        print(f"\nProcessing: {tracking_dir}")
+        print(f"\nProcessing video: {video_id}")
 
-        # Find data files
-        frame_files = sorted(tracking_dir.glob("frame_*.pt")) or sorted(tracking_dir.glob("*.pt"))
-        image_files = sorted(tracking_dir.parent.glob("images/*.png")) or sorted(tracking_dir.parent.glob("images/*.jpg"))
+        try:
+            # Load source info (generate_ply_cloud.py と同じ方法)
+            source_info = test_dataset._load_source_info(video_id)
 
-        if not frame_files:
-            print(f"  No frame data found in {tracking_dir}")
+            # Forward pass (triggers hooks)
+            with torch.no_grad():
+                vertex_gs_dict, uv_point_gs_dict, extra_dict = infer_model(source_info)
+
+            # Check if data was captured
+            if captured_data['input'] is None or captured_data['output'] is None:
+                print(f"  No data captured for video {video_id}")
+                continue
+
+            # Save captured data
+            sample_id = f"{sample_count:06d}"
+
+            torch.save(captured_data['input'], output_dir / "input_35ch" / f"{sample_id}.pt")
+            torch.save(captured_data['output'], output_dir / "output_96ch" / f"{sample_id}.pt")
+
+            if captured_data['extra_style'] is not None:
+                torch.save(captured_data['extra_style'], output_dir / "extra_style" / f"{sample_id}.pt")
+
+            print(f"  Saved sample {sample_id}")
+            print(f"    Input shape: {captured_data['input'].shape if captured_data['input'] is not None else 'None'}")
+            print(f"    Output shape: {captured_data['output'].shape if captured_data['output'] is not None else 'None'}")
+
+            sample_count += 1
+
+            # Reset captured data
+            captured_data['input'] = None
+            captured_data['output'] = None
+            captured_data['extra_style'] = None
+
+        except Exception as e:
+            print(f"  Error processing video {video_id}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
 
-        print(f"  Found {len(frame_files)} frames, {len(image_files)} images")
-
-        for frame_idx, frame_file in enumerate(tqdm(frame_files, desc="Extracting")):
-            if sample_count >= num_frames:
-                break
-
-            try:
-                # Load frame data
-                frame_data = torch.load(frame_file, map_location=device)
-
-                # Load corresponding image
-                if frame_idx < len(image_files):
-                    from PIL import Image
-                    import torchvision.transforms as T
-
-                    img = Image.open(image_files[frame_idx]).convert('RGB')
-                    transform = T.Compose([
-                        T.Resize((518, 518)),
-                        T.ToTensor(),
-                    ])
-                    image_tensor = transform(img).unsqueeze(0).to(device)
-                else:
-                    # Fallback: random image
-                    image_tensor = torch.rand(1, 3, 518, 518, device=device)
-
-                # Prepare batch
-                batch = {
-                    'image': image_tensor,
-                    'smplx_coeffs': frame_data.get('smplx_coeffs', torch.zeros(1, 156, device=device)),
-                    'flame_coeffs': frame_data.get('flame_coeffs', torch.zeros(1, 100, device=device)),
-                    'w2c_cam': frame_data.get('w2c_cam', torch.eye(4, device=device).unsqueeze(0)),
-                }
-
-                # Generate multiple camera angles
-                base_w2c = batch['w2c_cam']
-                camera_angles = generate_camera_angles(base_w2c[0], num_angles)
-
-                for angle_idx, w2c in enumerate(camera_angles):
-                    if sample_count >= num_frames:
-                        break
-
-                    batch['w2c_cam'] = w2c.unsqueeze(0)
-
-                    # Forward pass (triggers hooks)
-                    with torch.no_grad():
-                        try:
-                            vertex_gs_dict, uv_point_gs_dict, extra_dict = infer_model(batch)
-                        except Exception as e:
-                            print(f"  Forward error: {e}")
-                            continue
-
-                    # Check if data was captured
-                    if captured_data['input'] is None or captured_data['output'] is None:
-                        print(f"  No data captured for frame {frame_idx}, angle {angle_idx}")
-                        continue
-
-                    # Save captured data
-                    sample_id = f"{sample_count:06d}"
-
-                    torch.save(captured_data['input'], output_dir / "input_35ch" / f"{sample_id}.pt")
-                    torch.save(captured_data['output'], output_dir / "output_96ch" / f"{sample_id}.pt")
-
-                    if captured_data['extra_style'] is not None:
-                        torch.save(captured_data['extra_style'], output_dir / "extra_style" / f"{sample_id}.pt")
-
-                    sample_count += 1
-
-                    # Reset captured data
-                    captured_data['input'] = None
-                    captured_data['output'] = None
-                    captured_data['extra_style'] = None
-
-            except Exception as e:
-                print(f"  Error processing frame {frame_idx}: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
+    # Cleanup
+    test_dataset._lmdb_engine.close()
 
     # Cleanup
     hook_handle.remove()
