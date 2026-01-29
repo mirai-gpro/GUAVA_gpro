@@ -18,61 +18,48 @@ ehm_volume = modal.Volume.from_name("ehm-tracker-output", create_if_missing=True
 weights_volume = modal.Volume.from_name("guava-weights", create_if_missing=True)
 output_volume = modal.Volume.from_name("uv-styleunet-distill-data", create_if_missing=True)
 
-# Docker image - CUDA 11.8 base with proper pytorch3d build
-# Key lessons:
-#   1. NEVER use debian_slim - always use nvidia/cuda:11.8.0-devel
-#   2. Build PyTorch3D from source with FORCE_CUDA=1
-#   3. Pin numpy==1.26.4 LAST to prevent overwrites
-#   4. Use --index-url for PyTorch packages
-
-cuda_base = modal.Image.from_registry(
-    "nvidia/cuda:11.8.0-devel-ubuntu22.04",
-    add_python="3.10"
-)
-
+# === Modal Image定義 (generate_ply_modal.py の成功パターンを完全コピー) ===
 image = (
-    cuda_base
+    modal.Image.from_registry("nvidia/cuda:11.8.0-devel-ubuntu22.04", add_python="3.10")
     .apt_install(
-        "build-essential", "ninja-build", "git", "cmake",
-        "libgl1-mesa-glx", "libglib2.0-0", "wget", "unzip",
-        "libsm6", "libxext6", "libxrender-dev",
-        "libegl1-mesa-dev", "libgles2-mesa-dev",
+        "git", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg", "wget",
+        "libusb-1.0-0", "build-essential", "ninja-build",
+        "clang", "llvm", "libclang-dev"
     )
-    # PyTorch with CUDA 11.8
-    .pip_install(
-        "torch==2.2.0",
-        "torchvision==0.17.0",
-        "torchaudio==2.2.0",
-        index_url="https://download.pytorch.org/whl/cu118",
-    )
-    # Core dependencies (chumpy works in this environment)
-    .pip_install(
-        "chumpy==0.70",
-        "lightning",
-        "einops",
-        "roma",
-        "trimesh",
-        "tqdm",
-        "pillow",
-        "pyyaml",
-        "easydict",
-        "plyfile",
-        "open3d",
-        "opencv-python-headless",
-        "scipy",
-        "smplx",
-    )
-    # Build PyTorch3D from source with FORCE_CUDA
+
+    # 1. Base dependencies - numpy<2.0 を最初にピン留め
     .run_commands(
-        "pip install 'git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7'",
-        env={
-            "FORCE_CUDA": "1",
-            "TORCH_CUDA_ARCH_LIST": "7.0;7.5;8.0;8.6;8.9;9.0",
-            "MAX_JOBS": "4",
-        },
+        "python -m pip install --upgrade pip setuptools wheel",
+        "pip install 'numpy<2.0'"
     )
-    # Pin numpy LAST to prevent overwrites
-    .pip_install("numpy==1.26.4")
+    .run_commands(
+        "pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu118"
+    )
+
+    # 2. Build Tools & Core Libraries - 環境変数を設定してからビルド
+    .env({
+        "FORCE_CUDA": "1",
+        "CUDA_HOME": "/usr/local/cuda",
+        "MAX_JOBS": "4",
+        "TORCH_CUDA_ARCH_LIST": "8.6",
+        "CC": "clang",
+        "CXX": "clang++"
+    })
+    .run_commands(
+        "pip install chumpy==0.70 --no-build-isolation",
+        "pip install git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7 --no-build-isolation"
+    )
+
+    # 3. Remaining libraries - numpy==1.26.4 を最後にピン留め
+    .pip_install(
+        "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
+        "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
+        "opencv-python-headless", "einops", "easydict", "trimesh",
+        "tqdm", "pillow", "pyyaml", "scipy", "smplx",
+        "numpy==1.26.4"
+    )
+
+    # 4. Project Assets
     .add_local_dir("./models", remote_path="/root/GUAVA/models", copy=False)
     .add_local_dir("./utils", remote_path="/root/GUAVA/utils", copy=False)
     .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=False)
