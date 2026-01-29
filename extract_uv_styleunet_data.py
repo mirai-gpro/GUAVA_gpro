@@ -100,6 +100,9 @@ def extract_uv_styleunet_data(num_frames: int = 100, num_angles: int = 9):
     - Extra Style: 512-dim (uv_style_mapping出力)
     """
     import sys
+    import os
+
+    os.chdir("/root/GUAVA")
     sys.path.insert(0, "/root/GUAVA")
 
     import torch
