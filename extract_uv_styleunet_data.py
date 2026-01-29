@@ -72,17 +72,17 @@ image = (
 
     # 8. Additional libraries for UV StyleUNet extraction
     .pip_install(
-        "xformers==0.0.24",  # DINOv2 memory_efficient_attention 用
+        "xformers==0.0.23",  # DINOv2 memory_efficient_attention用 (torch 2.1.x 互換)
         "transformers==4.37.0",  # DINOv2
         "einops", "easydict", "rich"
     )
 
-    # 9. Project Assets
-    .add_local_dir("./main", remote_path="/root/GUAVA/main")
-    .add_local_dir("./models", remote_path="/root/GUAVA/models")
-    .add_local_dir("./utils", remote_path="/root/GUAVA/utils")
-    .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset")
-    .add_local_dir("./configs", remote_path="/root/GUAVA/configs")
+    # 9. Project Assets (copy=True必須: 後にdos2unixを実行するため)
+    .add_local_dir("./main", remote_path="/root/GUAVA/main", copy=True)
+    .add_local_dir("./models", remote_path="/root/GUAVA/models", copy=True)
+    .add_local_dir("./utils", remote_path="/root/GUAVA/utils", copy=True)
+    .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset", copy=True)
+    .add_local_dir("./configs", remote_path="/root/GUAVA/configs", copy=True)
     .run_commands("find /root/GUAVA -maxdepth 3 -name '*.py' | xargs dos2unix")
 )
 
