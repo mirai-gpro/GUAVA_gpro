@@ -18,63 +18,72 @@ ehm_volume = modal.Volume.from_name("ehm-tracker-output", create_if_missing=True
 weights_volume = modal.Volume.from_name("guava-weights", create_if_missing=True)
 output_volume = modal.Volume.from_name("uv-styleunet-distill-data", create_if_missing=True)
 
-# === Modal Image定義 (generate_ply_modal.py の成功パターンを完全コピー) ===
+# === Modal Image定義 (generate_ply_cloud.py の CUDA 12.1 構成に変更) ===
+# xformers==0.0.24 は cu121 用なので、CUDA 12.1 が必要
 image = (
-    modal.Image.from_registry("nvidia/cuda:11.8.0-devel-ubuntu22.04", add_python="3.10")
+    modal.Image.from_registry("nvidia/cuda:12.1.1-devel-ubuntu22.04", add_python="3.10")
     .apt_install(
-        "git", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg", "wget",
-        "libusb-1.0-0", "build-essential", "ninja-build",
-        "clang", "llvm", "libclang-dev"
+        "libgl1-mesa-glx", "libglib2.0-0", "git", "ninja-build",
+        "build-essential", "libglm-dev", "clang", "dos2unix", "ffmpeg",
+        "libsm6", "libxext6", "libxrender-dev"
     )
 
-    # 1. Base dependencies - numpy<2.0 を最初にピン留め
-    .run_commands(
-        "python -m pip install --upgrade pip setuptools wheel",
-        "pip install 'numpy<2.0'"
-    )
-    .run_commands(
-        "pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu118"
-    )
-
-    # 2. Build Tools & Core Libraries - 環境変数を設定してからビルド
+    # 1. 環境変数設定
     .env({
-        "FORCE_CUDA": "1",
         "CUDA_HOME": "/usr/local/cuda",
         "MAX_JOBS": "4",
-        "TORCH_CUDA_ARCH_LIST": "8.6",
         "CC": "clang",
-        "CXX": "clang++"
+        "CXX": "clang++",
+        "TORCH_CUDA_ARCH_LIST": "8.9"
     })
+
+    # 2. Base dependencies
     .run_commands(
-        "pip install chumpy==0.70 --no-build-isolation",
-        "pip install git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7 --no-build-isolation"
+        "python -m pip install --upgrade pip setuptools wheel",
+        "pip install \"numpy==1.26.4\" \"scipy\""
+    )
+    .run_commands("pip install chumpy --no-build-isolation")
+
+    # 3. PyTorch with CUDA 12.1
+    .run_commands("pip install \"torch==2.1.0\" \"torchvision==0.16.0\" --extra-index-url https://download.pytorch.org/whl/cu121")
+
+    # 4. Core libraries (generate_ply_cloud.py と同じ)
+    .pip_install(
+        "lightning", "pytorch-lightning", "omegaconf", "gsplat",
+        "opencv-python", "h5py", "tqdm", "scikit-image", "trimesh", "plyfile",
+        "lmdb", "lpips", "open3d", "roma", "smplx", "yacs", "ninja",
+        "colored", "termcolor", "tabulate", "vispy", "configargparse", "portalocker",
+        "fvcore", "iopath", "imageio-ffmpeg"
     )
 
-    # 3. Submodules Build - generate_ply_modal.py と同じ構成
+    # 5. numpy ピン留め
+    .run_commands("pip install \"numpy==1.26.4\"")
+
+    # 6. PyTorch3D (prebuilt wheel for cu121/pyt210)
+    .run_commands("pip install --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt210/download.html")
+
+    # 7. Submodules Build
     .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=True)
     .run_commands(
-        "cd /root/GUAVA/submodules/diff-gaussian-rasterization-32 && pip install . --no-build-isolation",
-        "cd /root/GUAVA/submodules/simple-knn && pip install . --no-build-isolation",
-        "cd /root/GUAVA/submodules/fused-ssim && pip install . --no-build-isolation"
+        "cd /root/GUAVA/submodules/diff-gaussian-rasterization-32 && rm -rf build && pip install . --no-build-isolation",
+        "cd /root/GUAVA/submodules/simple-knn && rm -rf build && pip install . --no-build-isolation",
+        "cd /root/GUAVA/submodules/fused-ssim && rm -rf build && pip install . --no-build-isolation"
     )
 
-    # 4. Remaining libraries - generate_ply_modal.py と同じ構成
+    # 8. Additional libraries for UV StyleUNet extraction
     .pip_install(
-        "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
-        "lmdb==1.6.2", "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
-        "rich==14.0.0", "opencv-python-headless", "xformers==0.0.24",
-        "tyro==0.8.0", "onnxruntime-gpu==1.18", "onnx==1.16", "mediapipe==0.10.21",
-        "transformers==4.37.0", "configer==1.3.1", "torchgeometry==0.1.2", "pynvml==13.0.1",
-        "einops", "easydict", "trimesh", "tqdm", "pillow", "pyyaml", "scipy", "smplx",
-        "numpy==1.26.4", "colored"
+        "xformers==0.0.24",  # DINOv2 memory_efficient_attention 用
+        "transformers==4.37.0",  # DINOv2
+        "einops", "easydict", "rich"
     )
 
-    # 5. Project Assets - generate_ply_modal.py と同じ構成
+    # 9. Project Assets
     .add_local_dir("./main", remote_path="/root/GUAVA/main")
     .add_local_dir("./models", remote_path="/root/GUAVA/models")
     .add_local_dir("./utils", remote_path="/root/GUAVA/utils")
     .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset")
     .add_local_dir("./configs", remote_path="/root/GUAVA/configs")
+    .run_commands("find /root/GUAVA -maxdepth 3 -name '*.py' | xargs dos2unix")
 )
 
 app = modal.App("uv-styleunet-data-extraction")
