@@ -253,55 +253,67 @@ def extract_uv_styleunet_data(num_frames: int = 100, num_angles: int = 9):
     print(f"Found {len(video_ids)} videos")
 
     # ============================================================
-    # Data Extraction Loop
+    # Data Extraction Loop - 複数フレームを処理
     # ============================================================
 
     sample_count = 0
+    total_target = num_frames
 
     for video_id in video_ids:
-        if sample_count >= num_frames:
+        if sample_count >= total_target:
             break
 
         print(f"\nProcessing video: {video_id}")
 
-        try:
-            # Load source info (generate_ply_cloud.py と同じ方法)
-            source_info = test_dataset._load_source_info(video_id)
+        # ビデオ内のフレーム数を取得
+        video_info = test_dataset.videos_info[video_id]
+        frames_num = video_info['frames_num']
+        frames_keys = video_info['frames_keys']
+        print(f"  Total frames in video: {frames_num}")
 
-            # Forward pass (triggers hooks)
-            with torch.no_grad():
-                vertex_gs_dict, uv_point_gs_dict, extra_dict = infer_model(source_info)
+        # 各フレームを処理 (key_idx を変えて複数のソースフレームを処理)
+        for frame_idx in tqdm(range(min(frames_num, total_target - sample_count)), desc=f"  Extracting {video_id}"):
+            try:
+                # 異なるフレームをソースとして読み込み
+                source_info = test_dataset._load_source_info(video_id, key_idx=frame_idx)
 
-            # Check if data was captured
-            if captured_data['input'] is None or captured_data['output'] is None:
-                print(f"  No data captured for video {video_id}")
+                # Forward pass (hooks がデータをキャプチャ)
+                with torch.no_grad():
+                    vertex_gs_dict, uv_point_gs_dict, extra_dict = infer_model(source_info)
+
+                # キャプチャされたデータを確認
+                if captured_data['input'] is None or captured_data['output'] is None:
+                    print(f"    No data captured for frame {frame_idx}")
+                    continue
+
+                # データを保存
+                sample_id = f"{sample_count:06d}"
+
+                torch.save(captured_data['input'], output_dir / "input_35ch" / f"{sample_id}.pt")
+                torch.save(captured_data['output'], output_dir / "output_96ch" / f"{sample_id}.pt")
+
+                if captured_data['extra_style'] is not None:
+                    torch.save(captured_data['extra_style'], output_dir / "extra_style" / f"{sample_id}.pt")
+
+                # 最初と最後のサンプルのみ詳細を表示
+                if sample_count == 0 or sample_count == total_target - 1 or (sample_count + 1) % 20 == 0:
+                    print(f"    Sample {sample_id}: Input {captured_data['input'].shape}, Output {captured_data['output'].shape}")
+
+                sample_count += 1
+
+                # キャプチャデータをリセット
+                captured_data['input'] = None
+                captured_data['output'] = None
+                captured_data['extra_style'] = None
+
+                if sample_count >= total_target:
+                    break
+
+            except Exception as e:
+                print(f"    Error processing frame {frame_idx}: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
-
-            # Save captured data
-            sample_id = f"{sample_count:06d}"
-
-            torch.save(captured_data['input'], output_dir / "input_35ch" / f"{sample_id}.pt")
-            torch.save(captured_data['output'], output_dir / "output_96ch" / f"{sample_id}.pt")
-
-            if captured_data['extra_style'] is not None:
-                torch.save(captured_data['extra_style'], output_dir / "extra_style" / f"{sample_id}.pt")
-
-            print(f"  Saved sample {sample_id}")
-            print(f"    Input shape: {captured_data['input'].shape if captured_data['input'] is not None else 'None'}")
-            print(f"    Output shape: {captured_data['output'].shape if captured_data['output'] is not None else 'None'}")
-
-            sample_count += 1
-
-            # Reset captured data
-            captured_data['input'] = None
-            captured_data['output'] = None
-            captured_data['extra_style'] = None
-
-        except Exception as e:
-            print(f"  Error processing video {video_id}: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
 
     # Cleanup
     test_dataset._lmdb_engine.close()
