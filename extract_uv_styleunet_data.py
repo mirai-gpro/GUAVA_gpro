@@ -50,7 +50,15 @@ image = (
         "pip install git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7 --no-build-isolation"
     )
 
-    # 3. Remaining libraries - generate_ply_modal.py と同じ構成
+    # 3. Submodules Build - generate_ply_modal.py と同じ構成
+    .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=True)
+    .run_commands(
+        "cd /root/GUAVA/submodules/diff-gaussian-rasterization-32 && pip install . --no-build-isolation",
+        "cd /root/GUAVA/submodules/simple-knn && pip install . --no-build-isolation",
+        "cd /root/GUAVA/submodules/fused-ssim && pip install . --no-build-isolation"
+    )
+
+    # 4. Remaining libraries - generate_ply_modal.py と同じ構成
     .pip_install(
         "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
         "lmdb==1.6.2", "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
@@ -61,13 +69,12 @@ image = (
         "numpy==1.26.4", "colored"
     )
 
-    # 4. Project Assets - generate_ply_modal.py と同じ構成
-    .add_local_dir("./main", remote_path="/root/GUAVA/main", copy=False)
-    .add_local_dir("./models", remote_path="/root/GUAVA/models", copy=False)
-    .add_local_dir("./utils", remote_path="/root/GUAVA/utils", copy=False)
-    .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset", copy=False)
-    .add_local_dir("./configs", remote_path="/root/GUAVA/configs", copy=False)
-    .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=False)
+    # 5. Project Assets - generate_ply_modal.py と同じ構成
+    .add_local_dir("./main", remote_path="/root/GUAVA/main")
+    .add_local_dir("./models", remote_path="/root/GUAVA/models")
+    .add_local_dir("./utils", remote_path="/root/GUAVA/utils")
+    .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset")
+    .add_local_dir("./configs", remote_path="/root/GUAVA/configs")
 )
 
 app = modal.App("uv-styleunet-data-extraction")
