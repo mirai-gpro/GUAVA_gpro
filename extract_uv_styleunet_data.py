@@ -55,7 +55,7 @@ image = (
         "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
         "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
         "opencv-python-headless", "einops", "easydict", "trimesh",
-        "tqdm", "pillow", "pyyaml", "scipy", "smplx",
+        "tqdm", "pillow", "pyyaml", "scipy", "smplx", "colored",
         "numpy==1.26.4"
     )
 
