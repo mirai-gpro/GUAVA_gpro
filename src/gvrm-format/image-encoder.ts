@@ -42,6 +42,12 @@ export class ImageEncoder {
   private templateFeatures: Float32Array | null = null;  // 518×518×128
   private uvFeatures: Float32Array | null = null;        // 518×518×32
 
+  // ソース画像とグローバル特徴を保存
+  private sourceImageData: Uint8Array | null = null;     // 518×518×4 (RGBA)
+  private sourceImageWidth: number = 518;
+  private sourceImageHeight: number = 518;
+  private globalFeature: Float32Array | null = null;     // 768ch (CLS token)
+
   async init(): Promise<void> {
     if (this.initialized) return;
 
@@ -194,6 +200,16 @@ export class ImageEncoder {
       const resized = await image.resize(518, 518);
       console.log('[ImageEncoder] Resized to 518×518');
 
+      // ソース画像を保存 (UV StyleUNet用)
+      this.sourceImageData = new Uint8Array(resized.data);
+      this.sourceImageWidth = resized.width;
+      this.sourceImageHeight = resized.height;
+      console.log('[ImageEncoder] Source image saved:', {
+        width: this.sourceImageWidth,
+        height: this.sourceImageHeight,
+        dataLength: this.sourceImageData.length
+      });
+
       // 2. DINOv2前処理(正規化)
       const normalized = this.preprocessImage(resized);
 
@@ -218,6 +234,13 @@ export class ImageEncoder {
       const clsData = hiddenState.slice(0, patchDim);
       const patchData = hiddenState.slice(patchDim);
       const numPatches = totalTokens - 1;
+
+      // グローバル特徴 (CLS token) を保存 (UV StyleUNet用)
+      this.globalFeature = new Float32Array(clsData);
+      console.log('[ImageEncoder] Global feature saved:', {
+        dimension: this.globalFeature.length,
+        expected: 768
+      });
 
       console.log('[ImageEncoder] Patches:', {
         numPatches,
@@ -763,6 +786,74 @@ export class ImageEncoder {
    */
   getAppearanceFeatureMap(): Float32Array {
     return this.getTemplateFeatures();
+  }
+
+  /**
+   * ソース画像のRGBデータを取得 (UV StyleUNet用)
+   * @param targetWidth 出力幅 (リサンプリング)
+   * @param targetHeight 出力高さ (リサンプリング)
+   * @returns [3, targetHeight, targetWidth] CHW形式の正規化RGB (0-1)
+   */
+  getSourceImageRGB(targetWidth: number, targetHeight: number): Float32Array {
+    if (!this.sourceImageData) {
+      throw new Error('[ImageEncoder] Source image not available. Call extractFeaturesWithSourceCamera() first.');
+    }
+
+    const srcW = this.sourceImageWidth;
+    const srcH = this.sourceImageHeight;
+    const result = new Float32Array(3 * targetHeight * targetWidth);
+
+    // Bilinear resampling from source to target
+    for (let y = 0; y < targetHeight; y++) {
+      for (let x = 0; x < targetWidth; x++) {
+        // Map target pixel to source coordinates
+        const srcX = (x + 0.5) * srcW / targetWidth - 0.5;
+        const srcY = (y + 0.5) * srcH / targetHeight - 0.5;
+
+        const x0 = Math.max(0, Math.floor(srcX));
+        const x1 = Math.min(srcW - 1, x0 + 1);
+        const y0 = Math.max(0, Math.floor(srcY));
+        const y1 = Math.min(srcH - 1, y0 + 1);
+
+        const wx = srcX - x0;
+        const wy = srcY - y0;
+
+        // Bilinear interpolation for each channel
+        for (let c = 0; c < 3; c++) {
+          const v00 = this.sourceImageData[(y0 * srcW + x0) * 4 + c] / 255.0;
+          const v10 = this.sourceImageData[(y0 * srcW + x1) * 4 + c] / 255.0;
+          const v01 = this.sourceImageData[(y1 * srcW + x0) * 4 + c] / 255.0;
+          const v11 = this.sourceImageData[(y1 * srcW + x1) * 4 + c] / 255.0;
+
+          const top = v00 * (1 - wx) + v10 * wx;
+          const bottom = v01 * (1 - wx) + v11 * wx;
+          const value = top * (1 - wy) + bottom * wy;
+
+          // CHW format: [channel, height, width]
+          result[c * targetHeight * targetWidth + y * targetWidth + x] = value;
+        }
+      }
+    }
+
+    console.log('[ImageEncoder] Source RGB extracted:', {
+      from: `${srcW}×${srcH}`,
+      to: `${targetWidth}×${targetHeight}`,
+      format: 'CHW [3, H, W]',
+      range: '0-1 normalized'
+    });
+
+    return result;
+  }
+
+  /**
+   * グローバル特徴 (CLS token) を取得 (UV StyleUNet用)
+   * @returns 768次元のグローバル特徴
+   */
+  getGlobalFeature(): Float32Array {
+    if (!this.globalFeature) {
+      throw new Error('[ImageEncoder] Global feature not available. Call extractFeaturesWithSourceCamera() first.');
+    }
+    return this.globalFeature;
   }
 
   /**
