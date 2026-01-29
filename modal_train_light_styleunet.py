@@ -1,7 +1,17 @@
 # modal_train_light_styleunet.py
 # Knowledge Distillation: 35ch → 96ch 軽量 StyleUNet
-# Teacher: 元の StyleUNet (118MB)
-# Student: RFDN ベース軽量モデル (~5-10MB)
+#
+# 実データを使用したKnowledge Distillation
+# - 入力: 35ch (3ch RGB + 32ch DINOv2) @ UV空間
+# - 出力: 96ch UV features
+# - Extra Style: 512-dim global feature
+#
+# 使用方法:
+#   # データ抽出後に学習
+#   modal run modal_train_light_styleunet.py --epochs 100 --batch-size 2
+#
+#   # データ抽出 (別スクリプト)
+#   modal run extract_uv_styleunet_data.py --action extract --num-frames 500
 
 import modal
 import os
@@ -9,16 +19,26 @@ import os
 # Modal app definition
 app = modal.App("light-styleunet-distillation")
 
-# Create volume for checkpoints
-volume = modal.Volume.from_name("guava-training-vol", create_if_missing=True)
+# Volumes
+training_volume = modal.Volume.from_name("guava-training-vol", create_if_missing=True)
+data_volume = modal.Volume.from_name("uv-styleunet-distill-data", create_if_missing=True)
 
-# Docker image with dependencies
+# Docker image - CUDA 11.8 base for reliable GPU training
+cuda_base = modal.Image.from_registry(
+    "nvidia/cuda:11.8.0-devel-ubuntu22.04",
+    add_python="3.10"
+)
+
 image = (
-    modal.Image.debian_slim(python_version="3.10")
+    cuda_base
+    .apt_install("build-essential", "ninja-build")
     .pip_install(
-        "torch>=2.0.0",
-        "torchvision",
-        "numpy",
+        "torch==2.2.0",
+        "torchvision==0.17.0",
+        index_url="https://download.pytorch.org/whl/cu118",
+    )
+    .pip_install(
+        "numpy==1.26.4",
         "pillow",
         "tqdm",
         "tensorboard",
@@ -26,25 +46,33 @@ image = (
 )
 
 VOLUME_PATH = "/vol"
+DATA_PATH = "/data"
 
 
 @app.function(
     image=image,
-    gpu="L4",  # or "A10G", "T4"
-    timeout=6 * 3600,  # 6 hours
-    volumes={VOLUME_PATH: volume},
+    gpu="L4",
+    timeout=6 * 3600,
+    volumes={
+        VOLUME_PATH: training_volume,
+        DATA_PATH: data_volume,
+    },
 )
 def train_light_styleunet(
     num_epochs: int = 100,
-    batch_size: int = 4,
+    batch_size: int = 2,
     learning_rate: float = 1e-4,
     checkpoint_path: str = None,
+    use_synthetic: bool = False,  # True: 合成データ, False: 実データ
 ):
     """
     Knowledge Distillation で軽量 StyleUNet を訓練
 
-    Teacher: 元の StyleUNet (35ch → 96ch, ~118MB)
-    Student: RFDN ベース (35ch → 96ch, ~5-10MB)
+    実データモード (推奨):
+        extract_uv_styleunet_data.py で抽出したデータを使用
+
+    合成データモード:
+        ランダム入力でTeacher出力を学習
     """
     import torch
     import torch.nn as nn
@@ -53,118 +81,13 @@ def train_light_styleunet(
     from torch.utils.tensorboard import SummaryWriter
     import numpy as np
     from tqdm import tqdm
-    import json
+    from pathlib import Path
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # ============================================================
-    # 1. Teacher Model: Original StyleUNet architecture
-    # ============================================================
-
-    class ModulatedConv2d(nn.Module):
-        """StyleGAN2 style modulated convolution"""
-        def __init__(self, in_ch, out_ch, kernel_size, style_dim, demodulate=True):
-            super().__init__()
-            self.in_ch = in_ch
-            self.out_ch = out_ch
-            self.kernel_size = kernel_size
-            self.demodulate = demodulate
-
-            self.weight = nn.Parameter(torch.randn(out_ch, in_ch, kernel_size, kernel_size))
-            self.style_linear = nn.Linear(style_dim, in_ch)
-            self.bias = nn.Parameter(torch.zeros(out_ch))
-
-            nn.init.kaiming_normal_(self.weight)
-            nn.init.ones_(self.style_linear.weight)
-            nn.init.zeros_(self.style_linear.bias)
-
-        def forward(self, x, style):
-            B, C, H, W = x.shape
-
-            # Style modulation
-            style_mod = self.style_linear(style).view(B, 1, C, 1, 1) + 1
-            weight = self.weight.unsqueeze(0) * style_mod
-
-            # Demodulation
-            if self.demodulate:
-                demod = torch.rsqrt(weight.pow(2).sum([2, 3, 4]) + 1e-8)
-                weight = weight * demod.view(B, self.out_ch, 1, 1, 1)
-
-            # Apply convolution per sample
-            x = x.view(1, B * C, H, W)
-            weight = weight.view(B * self.out_ch, C, self.kernel_size, self.kernel_size)
-
-            padding = self.kernel_size // 2
-            out = nn.functional.conv2d(x, weight, padding=padding, groups=B)
-            out = out.view(B, self.out_ch, H, W) + self.bias.view(1, -1, 1, 1)
-
-            return out
-
-    class StyleBlock(nn.Module):
-        def __init__(self, in_ch, out_ch, style_dim):
-            super().__init__()
-            self.conv1 = ModulatedConv2d(in_ch, out_ch, 3, style_dim)
-            self.conv2 = ModulatedConv2d(out_ch, out_ch, 3, style_dim)
-            self.act = nn.LeakyReLU(0.2, True)
-
-            if in_ch != out_ch:
-                self.skip = nn.Conv2d(in_ch, out_ch, 1)
-            else:
-                self.skip = nn.Identity()
-
-        def forward(self, x, style):
-            skip = self.skip(x)
-            x = self.act(self.conv1(x, style))
-            x = self.act(self.conv2(x, style))
-            return x + skip
-
-    class TeacherStyleUNet(nn.Module):
-        """Original StyleUNet (Teacher) - 35ch → 96ch"""
-        def __init__(self, in_ch=35, out_ch=96, style_dim=512):
-            super().__init__()
-
-            # Encoder
-            self.enc1 = StyleBlock(in_ch, 64, style_dim)
-            self.enc2 = StyleBlock(64, 128, style_dim)
-            self.enc3 = StyleBlock(128, 256, style_dim)
-            self.enc4 = StyleBlock(256, 512, style_dim)
-
-            # Bottleneck
-            self.bottleneck = StyleBlock(512, 512, style_dim)
-
-            # Decoder
-            self.dec4 = StyleBlock(512 + 512, 256, style_dim)
-            self.dec3 = StyleBlock(256 + 256, 128, style_dim)
-            self.dec2 = StyleBlock(128 + 128, 64, style_dim)
-            self.dec1 = StyleBlock(64 + 64, 64, style_dim)
-
-            # Output
-            self.out_conv = nn.Conv2d(64, out_ch, 1)
-
-            self.pool = nn.MaxPool2d(2)
-            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
-
-        def forward(self, x, style):
-            # Encoder
-            e1 = self.enc1(x, style)
-            e2 = self.enc2(self.pool(e1), style)
-            e3 = self.enc3(self.pool(e2), style)
-            e4 = self.enc4(self.pool(e3), style)
-
-            # Bottleneck
-            b = self.bottleneck(self.pool(e4), style)
-
-            # Decoder with skip connections
-            d4 = self.dec4(torch.cat([self.up(b), e4], dim=1), style)
-            d3 = self.dec3(torch.cat([self.up(d4), e3], dim=1), style)
-            d2 = self.dec2(torch.cat([self.up(d3), e2], dim=1), style)
-            d1 = self.dec1(torch.cat([self.up(d2), e1], dim=1), style)
-
-            return self.out_conv(d1)
-
-    # ============================================================
-    # 2. Student Model: Lightweight RFDN-based architecture
+    # 1. Student Model: Lightweight RFDN-based architecture
     # ============================================================
 
     class ESA(nn.Module):
@@ -172,21 +95,17 @@ def train_light_styleunet(
         def __init__(self, channels, reduction=4):
             super().__init__()
             self.conv1 = nn.Conv2d(channels, channels // reduction, 1)
-            self.conv2 = nn.Conv2d(channels // reduction, channels // reduction, 3, padding=1, groups=channels // reduction)
+            self.conv2 = nn.Conv2d(channels // reduction, channels // reduction, 3, padding=1, groups=max(1, channels // reduction))
             self.conv3 = nn.Conv2d(channels // reduction, channels, 1)
             self.sigmoid = nn.Sigmoid()
 
         def forward(self, x):
-            # Global pooling
             avg = x.mean(dim=[2, 3], keepdim=True)
-
-            # Channel attention
             att = self.conv1(avg)
             att = nn.functional.relu(att)
             att = self.conv2(att)
             att = nn.functional.relu(att)
             att = self.conv3(att)
-
             return x * self.sigmoid(att)
 
     class RFDB(nn.Module):
@@ -211,7 +130,6 @@ def train_light_styleunet(
             out2 = self.act(self.conv2(out1))
             out3 = self.act(self.conv3(out2))
 
-            # Feature distillation
             distill = self.distill_conv(out3)
             remain = self.remain_conv(out3)
 
@@ -224,12 +142,12 @@ def train_light_styleunet(
         """
         Lightweight StyleUNet (Student)
         35ch → 96ch with ~5-10MB parameters
-        Uses RFDN blocks instead of heavy StyleBlocks
+        Uses RFDN blocks + Style modulation
         """
         def __init__(self, in_ch=35, out_ch=96, base_ch=48, style_dim=512):
             super().__init__()
 
-            # Style projection (simplified)
+            # Style projection
             self.style_proj = nn.Sequential(
                 nn.Linear(style_dim, base_ch * 4),
                 nn.LeakyReLU(0.2, True),
@@ -239,7 +157,7 @@ def train_light_styleunet(
             # Input conv
             self.input_conv = nn.Conv2d(in_ch, base_ch, 3, padding=1)
 
-            # Encoder (lightweight)
+            # Encoder
             self.enc1 = RFDB(base_ch)
             self.enc2 = RFDB(base_ch)
             self.down1 = nn.Conv2d(base_ch, base_ch * 2, 3, stride=2, padding=1)
@@ -252,7 +170,7 @@ def train_light_styleunet(
             self.bottleneck1 = RFDB(base_ch * 4)
             self.bottleneck2 = RFDB(base_ch * 4)
 
-            # Style modulation at bottleneck
+            # Style modulation
             self.style_mod = nn.Conv2d(base_ch * 4, base_ch * 4, 1)
 
             # Decoder
@@ -278,18 +196,17 @@ def train_light_styleunet(
 
             # Encoder
             f = self.enc1(f)
-            f1 = self.enc2(f)  # Skip connection
+            f1 = self.enc2(f)
 
             f = self.act(self.down1(f1))
             f = self.enc3(f)
-            f2 = self.enc4(f)  # Skip connection
+            f2 = self.enc4(f)
 
             f = self.act(self.down2(f2))
 
             # Bottleneck with style modulation
             f = self.bottleneck1(f)
 
-            # Apply style modulation
             B, C, H, W = f.shape
             style_scale = style_emb.view(B, C, 1, 1)
             f = f * (1 + self.style_mod(style_scale.expand(-1, -1, H, W)))
@@ -298,12 +215,12 @@ def train_light_styleunet(
 
             # Decoder
             f = self.act(self.up1(f))
-            f = f + f2  # Skip connection
+            f = f + f2
             f = self.dec1(f)
             f = self.dec2(f)
 
             f = self.act(self.up2(f))
-            f = f + f1  # Skip connection
+            f = f + f1
             f = self.dec3(f)
             f = self.dec4(f)
 
@@ -313,15 +230,67 @@ def train_light_styleunet(
             return out
 
     # ============================================================
-    # 3. Synthetic Dataset for Distillation
+    # 2. Dataset: Real or Synthetic
     # ============================================================
+
+    class RealDistillationDataset(Dataset):
+        """
+        抽出した実データを使用
+        extract_uv_styleunet_data.py で生成されたデータを読み込む
+        """
+        def __init__(self, data_dir: str, resolution: int = 512):
+            self.data_dir = Path(data_dir)
+            self.resolution = resolution
+
+            # Find all input files
+            self.input_files = sorted((self.data_dir / "input_35ch").glob("*.pt"))
+            self.output_files = sorted((self.data_dir / "output_96ch").glob("*.pt"))
+            self.style_files = sorted((self.data_dir / "extra_style").glob("*.pt"))
+
+            assert len(self.input_files) == len(self.output_files), \
+                f"Input/Output mismatch: {len(self.input_files)} vs {len(self.output_files)}"
+
+            print(f"Loaded {len(self.input_files)} real data pairs")
+
+        def __len__(self):
+            return len(self.input_files)
+
+        def __getitem__(self, idx):
+            # Load input (35ch)
+            x = torch.load(self.input_files[idx])
+            if x.dim() == 4:
+                x = x.squeeze(0)
+
+            # Load target output (96ch)
+            y = torch.load(self.output_files[idx])
+            if y.dim() == 4:
+                y = y.squeeze(0)
+
+            # Load style
+            if idx < len(self.style_files):
+                style = torch.load(self.style_files[idx])
+                if style.dim() == 2:
+                    style = style.squeeze(0)
+            else:
+                style = torch.randn(512)
+
+            # Resize if needed
+            if x.shape[-1] != self.resolution:
+                x = nn.functional.interpolate(
+                    x.unsqueeze(0), size=(self.resolution, self.resolution), mode='bilinear'
+                ).squeeze(0)
+                y = nn.functional.interpolate(
+                    y.unsqueeze(0), size=(self.resolution, self.resolution), mode='bilinear'
+                ).squeeze(0)
+
+            return x, y, style
 
     class SyntheticDistillationDataset(Dataset):
         """
-        合成データセット
-        実際のデータがない場合、ランダムな入力で Teacher の出力を学習
+        合成データセット (フォールバック用)
+        実データがない場合に使用
         """
-        def __init__(self, num_samples=10000, resolution=512):
+        def __init__(self, num_samples=10000, resolution=256):
             self.num_samples = num_samples
             self.resolution = resolution
 
@@ -332,38 +301,87 @@ def train_light_styleunet(
             # Random UV features (32ch) + RGB (3ch) = 35ch
             uv_features = torch.randn(32, self.resolution, self.resolution) * 0.5
             rgb = torch.rand(3, self.resolution, self.resolution)
-
-            x = torch.cat([uv_features, rgb], dim=0)  # 35ch
+            x = torch.cat([rgb, uv_features], dim=0)  # 35ch (3+32)
 
             # Random style vector
             style = torch.randn(512)
 
-            return x, style
+            # Target will be generated by Teacher during training
+            # Return dummy target
+            y = torch.zeros(96, self.resolution, self.resolution)
+
+            return x, y, style
 
     # ============================================================
-    # 4. Training Loop
+    # 3. Teacher Model (for synthetic mode only)
+    # ============================================================
+
+    class TeacherStyleUNet(nn.Module):
+        """Simplified Teacher model for synthetic data mode"""
+        def __init__(self, in_ch=35, out_ch=96, style_dim=512):
+            super().__init__()
+
+            self.encoder = nn.Sequential(
+                nn.Conv2d(in_ch, 64, 3, padding=1),
+                nn.LeakyReLU(0.2, True),
+                nn.Conv2d(64, 128, 3, stride=2, padding=1),
+                nn.LeakyReLU(0.2, True),
+                nn.Conv2d(128, 256, 3, stride=2, padding=1),
+                nn.LeakyReLU(0.2, True),
+            )
+
+            self.style_linear = nn.Linear(style_dim, 256)
+
+            self.decoder = nn.Sequential(
+                nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1),
+                nn.LeakyReLU(0.2, True),
+                nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),
+                nn.LeakyReLU(0.2, True),
+                nn.Conv2d(64, out_ch, 3, padding=1),
+            )
+
+        def forward(self, x, style):
+            B = x.shape[0]
+            feat = self.encoder(x)
+            style_feat = self.style_linear(style).view(B, -1, 1, 1)
+            feat = feat * (1 + style_feat)
+            out = self.decoder(feat)
+            return out
+
+    # ============================================================
+    # 4. Training Setup
     # ============================================================
 
     print("=" * 60)
-    print("Knowledge Distillation: Light StyleUNet")
+    print("Light StyleUNet Knowledge Distillation")
     print("=" * 60)
 
-    # Create models
-    print("\nCreating Teacher model (will be frozen)...")
-    teacher = TeacherStyleUNet(in_ch=35, out_ch=96, style_dim=512).to(device)
-    teacher.eval()
-    for param in teacher.parameters():
-        param.requires_grad = False
+    # Check for real data
+    real_data_dir = Path(DATA_PATH) / "uv_styleunet_dataset"
+    has_real_data = (
+        (real_data_dir / "input_35ch").exists() and
+        len(list((real_data_dir / "input_35ch").glob("*.pt"))) > 0
+    )
 
-    teacher_params = sum(p.numel() for p in teacher.parameters())
-    print(f"  Teacher parameters: {teacher_params:,} ({teacher_params * 4 / 1024 / 1024:.2f} MB)")
+    if not use_synthetic and has_real_data:
+        print("\n✅ Using REAL extracted data")
+        dataset = RealDistillationDataset(real_data_dir, resolution=256)
+        teacher = None  # Not needed for real data
+    else:
+        print("\n⚠️ Using SYNTHETIC data (real data not found or --use-synthetic specified)")
+        print("  Run extract_uv_styleunet_data.py first for better results!")
+        dataset = SyntheticDistillationDataset(num_samples=5000, resolution=256)
+        teacher = TeacherStyleUNet(in_ch=35, out_ch=96, style_dim=512).to(device)
+        teacher.eval()
+        for param in teacher.parameters():
+            param.requires_grad = False
 
+    # Create Student model
     print("\nCreating Student model...")
     student = LightStyleUNet(in_ch=35, out_ch=96, base_ch=48, style_dim=512).to(device)
 
     student_params = sum(p.numel() for p in student.parameters())
     print(f"  Student parameters: {student_params:,} ({student_params * 4 / 1024 / 1024:.2f} MB)")
-    print(f"  Compression ratio: {teacher_params / student_params:.1f}x")
 
     # Load checkpoint if provided
     start_epoch = 0
@@ -374,46 +392,58 @@ def train_light_styleunet(
         start_epoch = ckpt.get('epoch', 0)
         print(f"  Resuming from epoch {start_epoch}")
 
-    # Dataset and DataLoader
-    print(f"\nCreating synthetic dataset...")
-    dataset = SyntheticDistillationDataset(num_samples=10000, resolution=256)  # Lower res for speed
+    # DataLoader
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-    print(f"  Samples: {len(dataset)}")
-    print(f"  Batches: {len(dataloader)}")
+    print(f"\nDataset: {len(dataset)} samples, {len(dataloader)} batches")
 
     # Optimizer and Loss
     optimizer = optim.AdamW(student.parameters(), lr=learning_rate, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
-    criterion = nn.MSELoss()
+
+    # Loss function: MSE + L1
+    mse_loss = nn.MSELoss()
+    l1_loss = nn.L1Loss()
 
     # TensorBoard
     writer = SummaryWriter(f"{VOLUME_PATH}/logs/light_styleunet")
 
-    # Training
+    # ============================================================
+    # 5. Training Loop
+    # ============================================================
+
     print(f"\n{'='*60}")
     print(f"Starting training for {num_epochs} epochs")
     print(f"{'='*60}")
 
     best_loss = float('inf')
+    os.makedirs(f"{VOLUME_PATH}/checkpoints", exist_ok=True)
 
     for epoch in range(start_epoch, num_epochs):
         student.train()
         epoch_loss = 0
+        epoch_mse = 0
+        epoch_l1 = 0
 
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")
-        for batch_idx, (x, style) in enumerate(pbar):
+        for batch_idx, (x, target, style) in enumerate(pbar):
             x = x.to(device)
             style = style.to(device)
 
-            # Teacher forward (no grad)
-            with torch.no_grad():
-                teacher_out = teacher(x, style)
+            # Get target
+            if teacher is not None:
+                # Synthetic mode: generate target from Teacher
+                with torch.no_grad():
+                    target = teacher(x, style)
+            else:
+                target = target.to(device)
 
             # Student forward
             student_out = student(x, style)
 
             # Loss
-            loss = criterion(student_out, teacher_out)
+            loss_mse = mse_loss(student_out, target)
+            loss_l1 = l1_loss(student_out, target)
+            loss = loss_mse + 0.1 * loss_l1
 
             # Backward
             optimizer.zero_grad()
@@ -421,23 +451,32 @@ def train_light_styleunet(
             optimizer.step()
 
             epoch_loss += loss.item()
-            pbar.set_postfix({'loss': f'{loss.item():.6f}'})
+            epoch_mse += loss_mse.item()
+            epoch_l1 += loss_l1.item()
+
+            pbar.set_postfix({
+                'loss': f'{loss.item():.4f}',
+                'mse': f'{loss_mse.item():.4f}',
+            })
 
         scheduler.step()
 
         # Epoch statistics
         avg_loss = epoch_loss / len(dataloader)
+        avg_mse = epoch_mse / len(dataloader)
+        avg_l1 = epoch_l1 / len(dataloader)
         current_lr = scheduler.get_last_lr()[0]
 
-        print(f"Epoch {epoch+1}: Loss = {avg_loss:.6f}, LR = {current_lr:.6f}")
+        print(f"Epoch {epoch+1}: Loss={avg_loss:.6f}, MSE={avg_mse:.6f}, L1={avg_l1:.6f}, LR={current_lr:.6f}")
 
-        writer.add_scalar('Loss/train', avg_loss, epoch)
+        writer.add_scalar('Loss/total', avg_loss, epoch)
+        writer.add_scalar('Loss/mse', avg_mse, epoch)
+        writer.add_scalar('Loss/l1', avg_l1, epoch)
         writer.add_scalar('LR', current_lr, epoch)
 
         # Save checkpoint
         if (epoch + 1) % 10 == 0 or avg_loss < best_loss:
             save_path = f"{VOLUME_PATH}/checkpoints/light_styleunet_epoch{epoch+1}.pt"
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
             torch.save({
                 'epoch': epoch + 1,
@@ -456,11 +495,14 @@ def train_light_styleunet(
                     'student_state_dict': student.state_dict(),
                     'loss': avg_loss,
                 }, best_path)
-                print(f"  New best model saved!")
+                print(f"  ✅ New best model!")
 
     writer.close()
 
-    # Export to ONNX
+    # ============================================================
+    # 6. Export to ONNX
+    # ============================================================
+
     print(f"\n{'='*60}")
     print("Exporting best model to ONNX...")
     print(f"{'='*60}")
@@ -483,9 +525,9 @@ def train_light_styleunet(
         input_names=['uv_features', 'extra_style'],
         output_names=['output'],
         dynamic_axes={
-            'uv_features': {0: 'batch'},
+            'uv_features': {0: 'batch', 2: 'height', 3: 'width'},
             'extra_style': {0: 'batch'},
-            'output': {0: 'batch'},
+            'output': {0: 'batch', 2: 'height', 3: 'width'},
         },
     )
 
@@ -495,7 +537,7 @@ def train_light_styleunet(
     print(f"  Compression: {118 / onnx_size:.1f}x smaller than original")
 
     # Commit volume
-    volume.commit()
+    training_volume.commit()
 
     print(f"\n{'='*60}")
     print("Training complete!")
@@ -506,40 +548,51 @@ def train_light_styleunet(
         'onnx_path': onnx_path,
         'onnx_size_mb': onnx_size,
         'compression_ratio': 118 / onnx_size,
+        'data_mode': 'synthetic' if teacher is not None else 'real',
     }
 
 
 @app.local_entrypoint()
 def main(
     epochs: int = 100,
-    batch_size: int = 4,
+    batch_size: int = 2,
     lr: float = 1e-4,
     resume: str = None,
+    use_synthetic: bool = False,
 ):
     """
     使用方法:
 
-    # 新規訓練
-    modal run modal_train_light_styleunet.py --epochs 100 --batch-size 4
+    # 実データで学習 (推奨)
+    modal run modal_train_light_styleunet.py --epochs 100 --batch-size 2
+
+    # 合成データで学習 (データ抽出前のテスト用)
+    modal run modal_train_light_styleunet.py --epochs 50 --use-synthetic
 
     # チェックポイントから再開
     modal run modal_train_light_styleunet.py --resume /vol/checkpoints/light_styleunet_epoch50.pt
+
+    # 学習後のモデルダウンロード
+    modal volume get guava-training-vol light_styleunet.onnx
     """
     print("Starting Light StyleUNet distillation training...")
     print(f"  Epochs: {epochs}")
     print(f"  Batch size: {batch_size}")
     print(f"  Learning rate: {lr}")
+    print(f"  Use synthetic: {use_synthetic}")
 
     result = train_light_styleunet.remote(
         num_epochs=epochs,
         batch_size=batch_size,
         learning_rate=lr,
         checkpoint_path=resume,
+        use_synthetic=use_synthetic,
     )
 
     print("\n" + "=" * 60)
     print("Training Results:")
     print("=" * 60)
+    print(f"  Data mode: {result['data_mode']}")
     print(f"  Best loss: {result['best_loss']:.6f}")
     print(f"  ONNX size: {result['onnx_size_mb']:.2f} MB")
     print(f"  Compression: {result['compression_ratio']:.1f}x")

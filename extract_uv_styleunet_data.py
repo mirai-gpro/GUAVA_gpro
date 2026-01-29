@@ -1,0 +1,448 @@
+# extract_uv_styleunet_data.py
+# UV StyleUNet用のデータ抽出スクリプト
+#
+# 抽出対象:
+#   - 入力: 35ch (3ch RGB + 32ch DINOv2) in UV space
+#   - 出力: 96ch UV features
+#   - Extra Style: 512-dim global feature
+#
+# 使用方法:
+#   modal run extract_uv_styleunet_data.py --action extract --num-frames 100
+#   modal run extract_uv_styleunet_data.py --action verify
+
+import modal
+import os
+
+# Modal volumes
+ehm_volume = modal.Volume.from_name("ehm-tracker-output", create_if_missing=True)
+weights_volume = modal.Volume.from_name("guava-weights", create_if_missing=True)
+output_volume = modal.Volume.from_name("uv-styleunet-distill-data", create_if_missing=True)
+
+# Docker image - CUDA 11.8 base with proper pytorch3d build
+# Key lessons:
+#   1. NEVER use debian_slim - always use nvidia/cuda:11.8.0-devel
+#   2. Build PyTorch3D from source with FORCE_CUDA=1
+#   3. Pin numpy==1.26.4 LAST to prevent overwrites
+#   4. Use --index-url for PyTorch packages
+
+cuda_base = modal.Image.from_registry(
+    "nvidia/cuda:11.8.0-devel-ubuntu22.04",
+    add_python="3.10"
+)
+
+image = (
+    cuda_base
+    .apt_install(
+        "build-essential", "ninja-build", "git", "cmake",
+        "libgl1-mesa-glx", "libglib2.0-0", "wget", "unzip",
+        "libsm6", "libxext6", "libxrender-dev",
+        "libegl1-mesa-dev", "libgles2-mesa-dev",
+    )
+    # PyTorch with CUDA 11.8
+    .pip_install(
+        "torch==2.2.0",
+        "torchvision==0.17.0",
+        "torchaudio==2.2.0",
+        index_url="https://download.pytorch.org/whl/cu118",
+    )
+    # Core dependencies (chumpy works in this environment)
+    .pip_install(
+        "chumpy==0.70",
+        "lightning",
+        "einops",
+        "roma",
+        "trimesh",
+        "tqdm",
+        "pillow",
+        "pyyaml",
+        "easydict",
+        "plyfile",
+        "open3d",
+        "opencv-python-headless",
+        "scipy",
+        "smplx",
+    )
+    # Build PyTorch3D from source with FORCE_CUDA
+    .run_commands(
+        "pip install 'git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7'",
+        env={
+            "FORCE_CUDA": "1",
+            "TORCH_CUDA_ARCH_LIST": "7.0;7.5;8.0;8.6;8.9;9.0",
+            "MAX_JOBS": "4",
+        },
+    )
+    # Pin numpy LAST to prevent overwrites
+    .pip_install("numpy==1.26.4")
+    .add_local_dir("./models", remote_path="/root/GUAVA/models", copy=False)
+    .add_local_dir("./utils", remote_path="/root/GUAVA/utils", copy=False)
+    .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=False)
+)
+
+app = modal.App("uv-styleunet-data-extraction")
+
+
+@app.function(
+    image=image,
+    gpu="L4",
+    timeout=4 * 3600,
+    volumes={
+        "/root/ehm_output": ehm_volume,
+        "/root/GUAVA/assets": weights_volume,
+        "/root/distill_data": output_volume,
+    },
+)
+def extract_uv_styleunet_data(num_frames: int = 100, num_angles: int = 9):
+    """
+    UV StyleUNet (uv_feature_decoder) の入出力データを抽出
+
+    Hook対象: infer_model.uv_feature_decoder
+    - 入力: 35ch (3ch RGB + 32ch DINOv2) @ UV空間
+    - 出力: 96ch UV features
+    - Extra Style: 512-dim (uv_style_mapping出力)
+    """
+    import sys
+    sys.path.insert(0, "/root/GUAVA")
+
+    import torch
+    import numpy as np
+    from tqdm import tqdm
+    from pathlib import Path
+    from easydict import EasyDict
+    import yaml
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # Output directory
+    output_dir = Path("/root/distill_data/uv_styleunet_dataset")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "input_35ch").mkdir(exist_ok=True)
+    (output_dir / "output_96ch").mkdir(exist_ok=True)
+    (output_dir / "extra_style").mkdir(exist_ok=True)
+
+    # Load config
+    config_path = "/root/GUAVA/assets/GUAVA/config.yaml"
+    with open(config_path, 'r') as f:
+        cfg = yaml.safe_load(f)
+    meta_cfg = EasyDict(cfg)
+    print(f"Config loaded: {meta_cfg.MODEL}")
+
+    # Load checkpoint
+    ckpt_path = "/root/GUAVA/assets/GUAVA/checkpoints/best_160000.pt"
+    print(f"Loading checkpoint: {ckpt_path}")
+    state = torch.load(ckpt_path, map_location=device)
+    print(f"Checkpoint keys: {list(state.keys())}")
+
+    # Import and create model
+    from models.UbodyAvatar.ubody_gaussian import Ubody_Gaussian_inferer
+
+    print("Creating Ubody_Gaussian_inferer...")
+    infer_model = Ubody_Gaussian_inferer(meta_cfg.MODEL).to(device)
+
+    # Load weights
+    model_state = state.get('model', state)
+
+    # Filter keys for infer_model
+    infer_keys = {k: v for k, v in model_state.items() if not k.startswith('render_model.')}
+    missing, unexpected = infer_model.load_state_dict(infer_keys, strict=False)
+    print(f"Loaded infer_model weights. Missing: {len(missing)}, Unexpected: {len(unexpected)}")
+
+    infer_model.eval()
+
+    # ============================================================
+    # Hook Setup for UV StyleUNet (uv_feature_decoder)
+    # ============================================================
+
+    captured_data = {
+        'input': None,      # 35ch input
+        'output': None,     # 96ch output
+        'extra_style': None # 512-dim style
+    }
+
+    def hook_uv_feature_decoder(module, input, output):
+        """Capture UV StyleUNet input/output"""
+        # input is tuple: (x, extra_style) or just x
+        if isinstance(input, tuple):
+            x = input[0]
+            # extra_style might be passed as keyword arg
+        else:
+            x = input
+
+        captured_data['input'] = x.detach().cpu()
+        captured_data['output'] = output.detach().cpu()
+
+    # Also hook uv_style_mapping to capture extra_style
+    original_uv_style_mapping_forward = infer_model.uv_style_mapping.forward
+
+    def hooked_uv_style_mapping_forward(x):
+        result = original_uv_style_mapping_forward(x)
+        captured_data['extra_style'] = result.detach().cpu()
+        return result
+
+    infer_model.uv_style_mapping.forward = hooked_uv_style_mapping_forward
+
+    # Register hook on uv_feature_decoder
+    hook_handle = infer_model.uv_feature_decoder.register_forward_hook(hook_uv_feature_decoder)
+
+    print("Hooks registered on uv_feature_decoder and uv_style_mapping")
+
+    # ============================================================
+    # Load EHM Tracking Data
+    # ============================================================
+
+    ehm_data_path = Path("/root/ehm_output")
+    tracking_dirs = list(ehm_data_path.glob("**/tracked_data"))
+
+    if not tracking_dirs:
+        print("No tracking data found!")
+        return {"error": "No tracking data"}
+
+    print(f"Found {len(tracking_dirs)} tracking directories")
+
+    # ============================================================
+    # Camera Angle Generation
+    # ============================================================
+
+    def generate_camera_angles(base_w2c, num_angles=9):
+        """Generate multiple camera viewpoints"""
+        angles = [base_w2c]
+
+        if num_angles <= 1:
+            return angles
+
+        # Rotation angles
+        rotation_degrees = [-30, -15, 15, 30]  # Yaw
+        tilt_degrees = [-15, 15]  # Pitch
+
+        for deg in rotation_degrees[:min(num_angles-1, len(rotation_degrees))]:
+            rad = np.radians(deg)
+            rot_y = torch.tensor([
+                [np.cos(rad), 0, np.sin(rad), 0],
+                [0, 1, 0, 0],
+                [-np.sin(rad), 0, np.cos(rad), 0],
+                [0, 0, 0, 1]
+            ], dtype=base_w2c.dtype, device=base_w2c.device)
+            angles.append(torch.matmul(rot_y, base_w2c))
+
+        for deg in tilt_degrees[:max(0, num_angles - 1 - len(rotation_degrees))]:
+            rad = np.radians(deg)
+            rot_x = torch.tensor([
+                [1, 0, 0, 0],
+                [0, np.cos(rad), -np.sin(rad), 0],
+                [0, np.sin(rad), np.cos(rad), 0],
+                [0, 0, 0, 1]
+            ], dtype=base_w2c.dtype, device=base_w2c.device)
+            angles.append(torch.matmul(rot_x, base_w2c))
+
+        return angles[:num_angles]
+
+    # ============================================================
+    # Data Extraction Loop
+    # ============================================================
+
+    sample_count = 0
+
+    for tracking_dir in tracking_dirs:
+        if sample_count >= num_frames:
+            break
+
+        print(f"\nProcessing: {tracking_dir}")
+
+        # Find data files
+        frame_files = sorted(tracking_dir.glob("frame_*.pt")) or sorted(tracking_dir.glob("*.pt"))
+        image_files = sorted(tracking_dir.parent.glob("images/*.png")) or sorted(tracking_dir.parent.glob("images/*.jpg"))
+
+        if not frame_files:
+            print(f"  No frame data found in {tracking_dir}")
+            continue
+
+        print(f"  Found {len(frame_files)} frames, {len(image_files)} images")
+
+        for frame_idx, frame_file in enumerate(tqdm(frame_files, desc="Extracting")):
+            if sample_count >= num_frames:
+                break
+
+            try:
+                # Load frame data
+                frame_data = torch.load(frame_file, map_location=device)
+
+                # Load corresponding image
+                if frame_idx < len(image_files):
+                    from PIL import Image
+                    import torchvision.transforms as T
+
+                    img = Image.open(image_files[frame_idx]).convert('RGB')
+                    transform = T.Compose([
+                        T.Resize((518, 518)),
+                        T.ToTensor(),
+                    ])
+                    image_tensor = transform(img).unsqueeze(0).to(device)
+                else:
+                    # Fallback: random image
+                    image_tensor = torch.rand(1, 3, 518, 518, device=device)
+
+                # Prepare batch
+                batch = {
+                    'image': image_tensor,
+                    'smplx_coeffs': frame_data.get('smplx_coeffs', torch.zeros(1, 156, device=device)),
+                    'flame_coeffs': frame_data.get('flame_coeffs', torch.zeros(1, 100, device=device)),
+                    'w2c_cam': frame_data.get('w2c_cam', torch.eye(4, device=device).unsqueeze(0)),
+                }
+
+                # Generate multiple camera angles
+                base_w2c = batch['w2c_cam']
+                camera_angles = generate_camera_angles(base_w2c[0], num_angles)
+
+                for angle_idx, w2c in enumerate(camera_angles):
+                    if sample_count >= num_frames:
+                        break
+
+                    batch['w2c_cam'] = w2c.unsqueeze(0)
+
+                    # Forward pass (triggers hooks)
+                    with torch.no_grad():
+                        try:
+                            vertex_gs_dict, uv_point_gs_dict, extra_dict = infer_model(batch)
+                        except Exception as e:
+                            print(f"  Forward error: {e}")
+                            continue
+
+                    # Check if data was captured
+                    if captured_data['input'] is None or captured_data['output'] is None:
+                        print(f"  No data captured for frame {frame_idx}, angle {angle_idx}")
+                        continue
+
+                    # Save captured data
+                    sample_id = f"{sample_count:06d}"
+
+                    torch.save(captured_data['input'], output_dir / "input_35ch" / f"{sample_id}.pt")
+                    torch.save(captured_data['output'], output_dir / "output_96ch" / f"{sample_id}.pt")
+
+                    if captured_data['extra_style'] is not None:
+                        torch.save(captured_data['extra_style'], output_dir / "extra_style" / f"{sample_id}.pt")
+
+                    sample_count += 1
+
+                    # Reset captured data
+                    captured_data['input'] = None
+                    captured_data['output'] = None
+                    captured_data['extra_style'] = None
+
+            except Exception as e:
+                print(f"  Error processing frame {frame_idx}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+
+    # Cleanup
+    hook_handle.remove()
+
+    # Summary
+    print(f"\n{'='*60}")
+    print(f"Extraction Complete!")
+    print(f"{'='*60}")
+    print(f"Total samples: {sample_count}")
+    print(f"Output directory: {output_dir}")
+    print(f"  - input_35ch/: {len(list((output_dir / 'input_35ch').glob('*.pt')))} files")
+    print(f"  - output_96ch/: {len(list((output_dir / 'output_96ch').glob('*.pt')))} files")
+    print(f"  - extra_style/: {len(list((output_dir / 'extra_style').glob('*.pt')))} files")
+
+    # Verify sample shapes
+    if sample_count > 0:
+        sample_input = torch.load(output_dir / "input_35ch" / "000000.pt")
+        sample_output = torch.load(output_dir / "output_96ch" / "000000.pt")
+        print(f"\nSample shapes:")
+        print(f"  Input: {sample_input.shape} (expected: [1, 35, 512, 512])")
+        print(f"  Output: {sample_output.shape} (expected: [1, 96, 512, 512])")
+
+        if (output_dir / "extra_style" / "000000.pt").exists():
+            sample_style = torch.load(output_dir / "extra_style" / "000000.pt")
+            print(f"  Extra Style: {sample_style.shape} (expected: [1, 512])")
+
+    output_volume.commit()
+
+    return {
+        "total_samples": sample_count,
+        "output_dir": str(output_dir),
+    }
+
+
+@app.function(
+    image=image,
+    timeout=600,
+    volumes={"/root/distill_data": output_volume},
+)
+def verify_extracted_data():
+    """抽出データの検証"""
+    import torch
+    from pathlib import Path
+
+    output_dir = Path("/root/distill_data/uv_styleunet_dataset")
+
+    if not output_dir.exists():
+        return {"error": "No data found"}
+
+    input_files = sorted((output_dir / "input_35ch").glob("*.pt"))
+    output_files = sorted((output_dir / "output_96ch").glob("*.pt"))
+    style_files = sorted((output_dir / "extra_style").glob("*.pt"))
+
+    print(f"Found {len(input_files)} input files")
+    print(f"Found {len(output_files)} output files")
+    print(f"Found {len(style_files)} style files")
+
+    # Verify shapes
+    if input_files:
+        sample_input = torch.load(input_files[0])
+        sample_output = torch.load(output_files[0])
+
+        print(f"\nSample shapes:")
+        print(f"  Input: {sample_input.shape}")
+        print(f"  Output: {sample_output.shape}")
+
+        # Check values
+        print(f"\nInput stats:")
+        print(f"  Min: {sample_input.min():.4f}, Max: {sample_input.max():.4f}")
+        print(f"  Mean: {sample_input.mean():.4f}, Std: {sample_input.std():.4f}")
+
+        print(f"\nOutput stats:")
+        print(f"  Min: {sample_output.min():.4f}, Max: {sample_output.max():.4f}")
+        print(f"  Mean: {sample_output.mean():.4f}, Std: {sample_output.std():.4f}")
+
+        if style_files:
+            sample_style = torch.load(style_files[0])
+            print(f"\nStyle stats:")
+            print(f"  Shape: {sample_style.shape}")
+            print(f"  Min: {sample_style.min():.4f}, Max: {sample_style.max():.4f}")
+
+    return {
+        "input_files": len(input_files),
+        "output_files": len(output_files),
+        "style_files": len(style_files),
+    }
+
+
+@app.local_entrypoint()
+def main(action: str = "extract", num_frames: int = 100, num_angles: int = 9):
+    """
+    UV StyleUNet データ抽出
+
+    使用方法:
+        # データ抽出
+        modal run extract_uv_styleunet_data.py --action extract --num-frames 100 --num-angles 9
+
+        # データ検証
+        modal run extract_uv_styleunet_data.py --action verify
+    """
+    if action == "extract":
+        print(f"Extracting UV StyleUNet data: {num_frames} frames, {num_angles} angles per frame")
+        result = extract_uv_styleunet_data.remote(num_frames=num_frames, num_angles=num_angles)
+        print(f"\nResult: {result}")
+
+    elif action == "verify":
+        print("Verifying extracted data...")
+        result = verify_extracted_data.remote()
+        print(f"\nResult: {result}")
+
+    else:
+        print(f"Unknown action: {action}")
+        print("Available actions: extract, verify")
