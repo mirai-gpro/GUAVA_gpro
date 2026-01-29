@@ -45,9 +45,14 @@ image = (
         "torchaudio==2.2.0",
         index_url="https://download.pytorch.org/whl/cu118",
     )
-    # Core dependencies (chumpy works in this environment)
+    # Upgrade pip first, then install chumpy with --no-build-isolation
+    # (chumpy's setup.py imports pip which fails in isolated builds)
+    .run_commands(
+        "pip install --upgrade pip setuptools wheel && "
+        "pip install chumpy==0.70 --no-build-isolation"
+    )
+    # Core dependencies
     .pip_install(
-        "chumpy==0.70",
         "lightning",
         "einops",
         "roma",
