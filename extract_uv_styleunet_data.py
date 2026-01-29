@@ -50,18 +50,23 @@ image = (
         "pip install git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7 --no-build-isolation"
     )
 
-    # 3. Remaining libraries - numpy==1.26.4 を最後にピン留め
+    # 3. Remaining libraries - generate_ply_modal.py と同じ構成
     .pip_install(
         "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
-        "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
-        "opencv-python-headless", "einops", "easydict", "trimesh",
-        "tqdm", "pillow", "pyyaml", "scipy", "smplx", "colored",
-        "numpy==1.26.4"
+        "lmdb==1.6.2", "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
+        "rich==14.0.0", "opencv-python-headless", "xformers==0.0.24",
+        "tyro==0.8.0", "onnxruntime-gpu==1.18", "onnx==1.16", "mediapipe==0.10.21",
+        "transformers==4.37.0", "configer==1.3.1", "torchgeometry==0.1.2", "pynvml==13.0.1",
+        "einops", "easydict", "trimesh", "tqdm", "pillow", "pyyaml", "scipy", "smplx",
+        "numpy==1.26.4", "colored"
     )
 
-    # 4. Project Assets
+    # 4. Project Assets - generate_ply_modal.py と同じ構成
+    .add_local_dir("./main", remote_path="/root/GUAVA/main", copy=False)
     .add_local_dir("./models", remote_path="/root/GUAVA/models", copy=False)
     .add_local_dir("./utils", remote_path="/root/GUAVA/utils", copy=False)
+    .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset", copy=False)
+    .add_local_dir("./configs", remote_path="/root/GUAVA/configs", copy=False)
     .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=False)
 )
 
