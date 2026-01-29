@@ -22,6 +22,7 @@ output_volume = modal.Volume.from_name("uv-styleunet-distill-data", create_if_mi
 image = (
     modal.Image.from_registry("nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04", add_python="3.11")
     .apt_install("git", "libgl1-mesa-glx", "libglib2.0-0", "wget", "unzip", "ninja-build", "libsm6", "libxext6")
+    .run_commands("pip install --upgrade pip setuptools wheel")
     .pip_install(
         "torch==2.1.0",
         "torchvision==0.16.0",
@@ -38,8 +39,9 @@ image = (
         "open3d",
         "opencv-python-headless",
         "scipy",
-        "chumpy",
     )
+    # Install chumpy separately (has build issues)
+    .run_commands("pip install chumpy || echo 'chumpy install failed, continuing...'")
     .pip_install("git+https://github.com/facebookresearch/pytorch3d.git")
     .add_local_dir("./models", remote_path="/root/GUAVA/models")
     .add_local_dir("./utils", remote_path="/root/GUAVA/utils")
