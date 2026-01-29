@@ -380,21 +380,20 @@ with torch.no_grad():
     print(f"  Input extra_style: {dummy_extra_style.shape}")
     print(f"  Output: {output.shape}")
 
-print("\nExporting to ONNX...")
+print("\nExporting to ONNX (legacy mode for ModulatedConv2d compatibility)...")
+# Use legacy export without dynamic batch (batch=1 fixed)
+# ModulatedConv2d uses groups=batch which doesn't work with dynamic axes
 torch.onnx.export(
     model,
     (dummy_uv_features, dummy_extra_style),
     "uv_styleunet.onnx",
     export_params=True,
-    opset_version=17,
+    opset_version=14,  # Use older opset for better compatibility
     input_names=['uv_features', 'extra_style'],
     output_names=['output'],
-    dynamic_axes={
-        'uv_features': {0: 'batch'},
-        'extra_style': {0: 'batch'},
-        'output': {0: 'batch'}
-    },
-    do_constant_folding=True
+    # No dynamic_axes - batch size fixed to 1
+    do_constant_folding=True,
+    dynamo=False  # Force legacy export
 )
 
 size_mb = os.path.getsize('uv_styleunet.onnx') / 1024 / 1024
@@ -424,7 +423,55 @@ print(f"Found {len(uv_style_keys)} keys:")
 for k in uv_style_keys:
     print(f"  {k}: {state_dict[k].shape}")
 
+# Export uv_style_mapping as ONNX
+print("\nExporting uv_style_mapping to ONNX...")
+
+class UVStyleMapping(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(768, 512),
+            nn.LeakyReLU(0.2, True),
+            nn.Linear(512, 512),
+            nn.LeakyReLU(0.2, True),
+            nn.Linear(512, 512)
+        )
+
+    def forward(self, x):
+        return self.layers(x)
+
+style_mapping = UVStyleMapping()
+style_mapping_state = {
+    'layers.0.weight': state_dict['uv_style_mapping.0.weight'],
+    'layers.0.bias': state_dict['uv_style_mapping.0.bias'],
+    'layers.2.weight': state_dict['uv_style_mapping.2.weight'],
+    'layers.2.bias': state_dict['uv_style_mapping.2.bias'],
+    'layers.4.weight': state_dict['uv_style_mapping.4.weight'],
+    'layers.4.bias': state_dict['uv_style_mapping.4.bias'],
+}
+style_mapping.load_state_dict(style_mapping_state)
+style_mapping.eval()
+
+dummy_global_feature = torch.randn(1, 768, dtype=torch.float32)
+torch.onnx.export(
+    style_mapping,
+    dummy_global_feature,
+    "uv_style_mapping.onnx",
+    export_params=True,
+    opset_version=14,
+    input_names=['global_feature'],
+    output_names=['extra_style'],
+    dynamic_axes={
+        'global_feature': {0: 'batch'},
+        'extra_style': {0: 'batch'}
+    },
+    dynamo=False
+)
+size_mb = os.path.getsize('uv_style_mapping.onnx') / 1024 / 1024
+print(f"✅ uv_style_mapping.onnx exported ({size_mb:.2f} MB)")
+
 print("\n✅ All exports complete!")
 print("\nFiles created:")
 print("  - uv_styleunet.onnx (UV StyleUNet: 35ch → 96ch)")
 print("  - uv_base_feature.bin (32ch learnable feature)")
+print("  - uv_style_mapping.onnx (768 → 512 style embedding)")
