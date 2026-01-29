@@ -67,9 +67,9 @@ image = (
         "scipy",
         "smplx",
     )
-    # Build PyTorch3D from source with FORCE_CUDA
+    # Build PyTorch3D from source with FORCE_CUDA (also needs --no-build-isolation)
     .run_commands(
-        "pip install 'git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7'",
+        "pip install 'git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7' --no-build-isolation",
         env={
             "FORCE_CUDA": "1",
             "TORCH_CUDA_ARCH_LIST": "7.0;7.5;8.0;8.6;8.9;9.0",
