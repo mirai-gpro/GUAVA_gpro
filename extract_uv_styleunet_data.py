@@ -50,19 +50,31 @@ image = (
         "pip install git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7 --no-build-isolation"
     )
 
-    # 3. Remaining libraries - numpy==1.26.4 を最後にピン留め
-    .pip_install(
-        "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
-        "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
-        "opencv-python-headless", "einops", "easydict", "trimesh",
-        "tqdm", "pillow", "pyyaml", "scipy", "smplx",
-        "numpy==1.26.4"
+    # 3. Submodules Build - generate_ply_modal.py と同じ構成
+    .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=True)
+    .run_commands(
+        "cd /root/GUAVA/submodules/diff-gaussian-rasterization-32 && pip install . --no-build-isolation",
+        "cd /root/GUAVA/submodules/simple-knn && pip install . --no-build-isolation",
+        "cd /root/GUAVA/submodules/fused-ssim && pip install . --no-build-isolation"
     )
 
-    # 4. Project Assets
-    .add_local_dir("./models", remote_path="/root/GUAVA/models", copy=False)
-    .add_local_dir("./utils", remote_path="/root/GUAVA/utils", copy=False)
-    .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=False)
+    # 4. Remaining libraries - generate_ply_modal.py と同じ構成
+    .pip_install(
+        "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
+        "lmdb==1.6.2", "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
+        "rich==14.0.0", "opencv-python-headless", "xformers==0.0.24",
+        "tyro==0.8.0", "onnxruntime-gpu==1.18", "onnx==1.16", "mediapipe==0.10.21",
+        "transformers==4.37.0", "configer==1.3.1", "torchgeometry==0.1.2", "pynvml==13.0.1",
+        "einops", "easydict", "trimesh", "tqdm", "pillow", "pyyaml", "scipy", "smplx",
+        "numpy==1.26.4", "colored"
+    )
+
+    # 5. Project Assets - generate_ply_modal.py と同じ構成
+    .add_local_dir("./main", remote_path="/root/GUAVA/main")
+    .add_local_dir("./models", remote_path="/root/GUAVA/models")
+    .add_local_dir("./utils", remote_path="/root/GUAVA/utils")
+    .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset")
+    .add_local_dir("./configs", remote_path="/root/GUAVA/configs")
 )
 
 app = modal.App("uv-styleunet-data-extraction")
@@ -88,6 +100,9 @@ def extract_uv_styleunet_data(num_frames: int = 100, num_angles: int = 9):
     - Extra Style: 512-dim (uv_style_mapping出力)
     """
     import sys
+    import os
+
+    os.chdir("/root/GUAVA")
     sys.path.insert(0, "/root/GUAVA")
 
     import torch
