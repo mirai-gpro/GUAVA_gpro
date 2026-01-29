@@ -23,13 +23,22 @@ app = modal.App("light-styleunet-distillation")
 training_volume = modal.Volume.from_name("guava-training-vol", create_if_missing=True)
 data_volume = modal.Volume.from_name("uv-styleunet-distill-data", create_if_missing=True)
 
-# Docker image with dependencies
+# Docker image - CUDA 11.8 base for reliable GPU training
+cuda_base = modal.Image.from_registry(
+    "nvidia/cuda:11.8.0-devel-ubuntu22.04",
+    add_python="3.10"
+)
+
 image = (
-    modal.Image.debian_slim(python_version="3.10")
+    cuda_base
+    .apt_install("build-essential", "ninja-build")
     .pip_install(
-        "torch>=2.0.0",
-        "torchvision",
-        "numpy",
+        "torch==2.2.0",
+        "torchvision==0.17.0",
+        index_url="https://download.pytorch.org/whl/cu118",
+    )
+    .pip_install(
+        "numpy==1.26.4",
         "pillow",
         "tqdm",
         "tensorboard",
