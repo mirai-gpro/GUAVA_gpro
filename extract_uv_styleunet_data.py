@@ -33,7 +33,7 @@ cuda_base = modal.Image.from_registry(
 image = (
     cuda_base
     .apt_install(
-        "build-essential", "ninja-build", "git", "cmake",
+        "build-essential", "ninja-build", "git", "cmake", "g++",
         "libgl1-mesa-glx", "libglib2.0-0", "wget", "unzip",
         "libsm6", "libxext6", "libxrender-dev",
         "libegl1-mesa-dev", "libgles2-mesa-dev",
@@ -45,13 +45,14 @@ image = (
         "torchaudio==2.2.0",
         index_url="https://download.pytorch.org/whl/cu118",
     )
+    # Pin numpy IMMEDIATELY after PyTorch to avoid 2.x incompatibility
+    .pip_install("numpy==1.26.4")
     # Upgrade pip first, then install chumpy with --no-build-isolation
-    # (chumpy's setup.py imports pip which fails in isolated builds)
     .run_commands(
         "pip install --upgrade pip setuptools wheel && "
         "pip install chumpy==0.70 --no-build-isolation"
     )
-    # Core dependencies
+    # Core dependencies (numpy already pinned, so won't be upgraded)
     .pip_install(
         "lightning",
         "einops",
@@ -67,16 +68,18 @@ image = (
         "scipy",
         "smplx",
     )
-    # Build PyTorch3D from source with FORCE_CUDA (also needs --no-build-isolation)
+    # Build PyTorch3D from source with FORCE_CUDA and g++ compiler
     .run_commands(
         "pip install 'git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7' --no-build-isolation",
         env={
             "FORCE_CUDA": "1",
             "TORCH_CUDA_ARCH_LIST": "7.0;7.5;8.0;8.6;8.9;9.0",
             "MAX_JOBS": "4",
+            "CXX": "g++",
+            "CC": "gcc",
         },
     )
-    # Pin numpy LAST to prevent overwrites
+    # Re-pin numpy LAST in case any dep overwrote it
     .pip_install("numpy==1.26.4")
     .add_local_dir("./models", remote_path="/root/GUAVA/models", copy=False)
     .add_local_dir("./utils", remote_path="/root/GUAVA/utils", copy=False)
