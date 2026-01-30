@@ -17,8 +17,8 @@ interface GaussianData {
 
 const vertexShader = `
   attribute vec4 latentTile;    // 4ch単位の特徴量
-  attribute float opacity;       // Gaussian不透明度
-  attribute vec3 gaussianScale;  // Gaussianスケール
+  attribute float opacity;       // Gaussian不透明度 (already sigmoid-activated, [0,1])
+  attribute vec3 gaussianScale;  // Gaussianスケール (already sigmoid*0.05-activated, [0,0.05])
   attribute vec4 boneIndices, boneWeights;
 
   uniform mat4 boneMatrices[64];
@@ -39,10 +39,14 @@ const vertexShader = `
     gl_Position = projectionMatrix * mvPosition;
 
     // ポイントサイズ: Gaussianスケールと距離に基づく
+    // Python Vertex_GS_Decoder: scales = sigmoid(scales) * 0.05
+    // ONNX model outputs activated scales in [0, 0.05]
     // スケールの平均を使用（異方性スケールの近似）
     float avgScale = (gaussianScale.x + gaussianScale.y + gaussianScale.z) / 3.0;
-    // スケール値を適切な範囲にマップ（学習済みスケールは通常-5〜2程度）
-    float scaleFactor = exp(clamp(avgScale, -5.0, 2.0));
+
+    // ✅ FIX: Scale is already activated (sigmoid*0.05), no exp() needed
+    // Scale range is [0, 0.05], multiply by 1000 to get reasonable point size
+    float scaleFactor = avgScale * 1000.0;
 
     // 距離に応じたサイズ調整
     float depth = -mvPosition.z;
@@ -73,10 +77,10 @@ const fragmentShader = `
     // 端で完全に透明
     if (dist > 0.5) discard;
 
-    // 不透明度を適用（sigmoid活性化されたopacity）
-    // opacity値は学習済みなので、sigmoidで[0,1]に変換
-    float alpha = 1.0 / (1.0 + exp(-vOpacity));
-    alpha *= gaussian;
+    // ✅ FIX: Python Vertex_GS_Decoder: opacities = sigmoid(opacities)
+    // ONNX model outputs already sigmoid-activated opacity in [0, 1]
+    // No need to apply sigmoid again!
+    float alpha = vOpacity * gaussian;
 
     // α < 0.01 はスキップ
     if (alpha < 0.01) discard;
@@ -100,8 +104,8 @@ const accumulateFragShader = `
 
     if (dist > 0.5) discard;
 
-    float alpha = 1.0 / (1.0 + exp(-vOpacity));
-    alpha *= gaussian;
+    // ✅ FIX: Opacity is already sigmoid-activated from ONNX model
+    float alpha = vOpacity * gaussian;
 
     if (alpha < 0.01) discard;
 
@@ -122,8 +126,12 @@ export class GSViewer {
   constructor(data: GaussianData) {
     this.vertexCount = data.vertexCount;
     this.latentData = data.latents;
-    this.opacityData = data.opacity || new Float32Array(data.vertexCount).fill(0); // sigmoid(0) = 0.5
-    this.scaleData = data.scale || new Float32Array(data.vertexCount * 3).fill(0);
+    // ✅ ONNX models output activated values:
+    // - Opacity: sigmoid(raw) → [0, 1]
+    // - Scale (Template): sigmoid(raw) * 0.05 → [0, 0.05]
+    // - Scale (UV): exp(raw) → typically small values ~0.01
+    this.opacityData = data.opacity || new Float32Array(data.vertexCount).fill(0.5);
+    this.scaleData = data.scale || new Float32Array(data.vertexCount * 3).fill(0.01);
     this.rotationData = data.rotation || new Float32Array(data.vertexCount * 4);
 
     console.log('[GSViewer] Initializing Gaussian Splatting...', {
