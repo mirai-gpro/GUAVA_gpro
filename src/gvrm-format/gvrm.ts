@@ -67,13 +67,6 @@ export interface GVRMConfig {
   imagePath?: string;
   /** 表示コンテナ要素 */
   container?: HTMLElement;
-  /**
-   * モバイルモード: 118MB UV StyleUNetをスキップ
-   * true: 32ch UV → 直接拡張して155ch (軽量、低品質)
-   * false: 論文準拠 StyleUNet パイプライン (高品質)
-   * @default false
-   */
-  mobileMode?: boolean;
 }
 
 export class GVRM {
@@ -94,7 +87,6 @@ export class GVRM {
 
   private initialized = false;
   private displayContainer: HTMLElement | null = null;
-  private mobileMode = false;  // モバイルモード: StyleUNetをスキップ
 
   // Configurable asset paths (concierge-controller.ts互換)
   private templatePath: string = '/assets/avatar_web.ply';
@@ -135,8 +127,7 @@ export class GVRM {
       console.log('[GVRM] Config provided:', {
         templatePath: config.templatePath,
         imagePath: config.imagePath,
-        hasContainer: !!config.container,
-        mobileMode: config.mobileMode
+        hasContainer: !!config.container
       });
 
       if (config.templatePath) {
@@ -148,17 +139,11 @@ export class GVRM {
       if (config.container) {
         this.displayContainer = config.container;
       }
-      if (config.mobileMode !== undefined) {
-        this.mobileMode = config.mobileMode;
-      }
     }
 
-    if (this.mobileMode) {
-      console.log('[GVRM] 📱 Mobile mode enabled: skipping 118MB UV StyleUNet');
-    } else {
-      console.log('[GVRM] 🖥️ Full mode: loading UV StyleUNet (118MB)');
-      this.uvStyleUNet = new UVStyleUNet();
-    }
+    // StyleUNet (軽量モデル 3.69MB)
+    this.uvStyleUNet = new UVStyleUNet();
+    console.log('[GVRM] Using lightweight StyleUNet (3.69MB, 32x compressed)');
 
     console.log('[GVRM] Using paths:', {
       template: this.templatePath,
@@ -243,12 +228,10 @@ export class GVRM {
     console.log('[GVRM]   - UV Decoder...');
     await this.uvDecoder.init('/assets');
 
-    // 論文準拠 StyleUNet (デスクトップモードのみ)
+    // UV StyleUNet (論文準拠: 35ch→96ch, 軽量モデル 3.69MB)
     if (this.uvStyleUNet) {
-      console.log('[GVRM]   - UV StyleUNet (論文準拠: 35ch→96ch)...');
-      await this.uvStyleUNet.init('/assets');
-    } else {
-      console.log('[GVRM]   - UV StyleUNet: SKIPPED (mobile mode)');
+      console.log('[GVRM]   - UV StyleUNet (論文準拠: 35ch→96ch, 3.69MB)...');
+      await this.uvStyleUNet.init({ basePath: '/assets' });
     }
 
     console.log('[GVRM]   - WebGL GPU Rasterizer...');
@@ -533,64 +516,43 @@ export class GVRM {
 
     let uvFeatureMap: Float32Array;
 
-    if (this.uvStyleUNet) {
-      // ========== Full Mode: Paper-compliant StyleUNet pipeline ==========
-      console.log('[GVRM]   🖥️ Full mode: Using StyleUNet pipeline');
-
-      // Step 10.5.2: Prepare 3ch RGB (from source image, resample to 512x512)
-      console.log('[GVRM]   Preparing 3ch RGB from source image...');
-      const rgbImage = this.imageEncoder.getSourceImageRGB(uvResolution, uvResolution);
-      console.log('[GVRM]   ✅ 3ch RGB prepared');
-
-      // Step 10.5.3: Get global feature for style embedding
-      console.log('[GVRM]   Getting global feature (768ch)...');
-      const globalFeature = this.imageEncoder.getGlobalFeature();
-      console.log('[GVRM]   ✅ Global feature ready');
-
-      // Step 10.5.4: StyleUNet: 35ch → 96ch
-      console.log('[GVRM]   Running StyleUNet (35ch → 96ch)...');
-      const styleunetOutput = await this.uvStyleUNet.forward(
-        uvFeatures32ch,
-        rgbImage,
-        globalFeature,
-        uvResolution,
-        uvResolution
-      );
-      console.log('[GVRM]   ✅ StyleUNet output: 96ch');
-
-      // Step 10.5.5: Add base_feature: 96ch + 32ch = 128ch
-      console.log('[GVRM]   Adding base_feature (96ch + 32ch = 128ch)...');
-      const features128ch = this.uvStyleUNet.addBaseFeature(styleunetOutput, uvResolution, uvResolution);
-      console.log('[GVRM]   ✅ 128ch features ready');
-
-      // Step 10.5.6: Add view direction encoding: 128ch + 27ch = 155ch
-      console.log('[GVRM]   Adding view direction encoding (128ch + 27ch = 155ch)...');
-      uvFeatureMap = concatenateWithViewEncoding(features128ch, viewDir, uvResolution, uvResolution);
-      console.log('[GVRM]   ✅ 155ch UV features ready (論文準拠)');
-
-    } else {
-      // ========== Mobile Mode: Simple feature expansion ==========
-      console.log('[GVRM]   📱 Mobile mode: Using simple feature expansion');
-
-      // Step 10.5.2 (mobile): Expand 32ch to 128ch by repeating 4 times
-      console.log('[GVRM]   Expanding 32ch to 128ch (repeat 4x)...');
-      const numPixels = uvResolution * uvResolution;
-      const features128ch = new Float32Array(128 * numPixels);
-
-      // Repeat 32ch features 4 times to get 128ch
-      for (let repeat = 0; repeat < 4; repeat++) {
-        const dstOffset = repeat * 32 * numPixels;
-        for (let i = 0; i < 32 * numPixels; i++) {
-          features128ch[dstOffset + i] = uvFeatures32ch[i];
-        }
-      }
-      console.log('[GVRM]   ✅ 128ch features ready (32ch × 4)');
-
-      // Step 10.5.3 (mobile): Add view direction encoding: 128ch + 27ch = 155ch
-      console.log('[GVRM]   Adding view direction encoding (128ch + 27ch = 155ch)...');
-      uvFeatureMap = concatenateWithViewEncoding(features128ch, viewDir, uvResolution, uvResolution);
-      console.log('[GVRM]   ✅ 155ch UV features ready (mobile simplified)');
+    // ========== StyleUNet pipeline (論文準拠, 軽量モデル 3.69MB) ==========
+    if (!this.uvStyleUNet) {
+      throw new Error('[GVRM] UVStyleUNet not initialized');
     }
+
+    console.log('[GVRM]   Using StyleUNet pipeline (3.69MB lightweight)');
+
+    // Step 10.5.2: Prepare 3ch RGB (from source image, resample to 512x512)
+    console.log('[GVRM]   Preparing 3ch RGB from source image...');
+    const rgbImage = this.imageEncoder.getSourceImageRGB(uvResolution, uvResolution);
+    console.log('[GVRM]   ✅ 3ch RGB prepared');
+
+    // Step 10.5.3: Get global feature for style embedding
+    console.log('[GVRM]   Getting global feature (768ch)...');
+    const globalFeature = this.imageEncoder.getGlobalFeature();
+    console.log('[GVRM]   ✅ Global feature ready');
+
+    // Step 10.5.4: StyleUNet: 35ch → 96ch
+    console.log('[GVRM]   Running StyleUNet (35ch → 96ch)...');
+    const styleunetOutput = await this.uvStyleUNet.forward(
+      uvFeatures32ch,
+      rgbImage,
+      globalFeature,
+      uvResolution,
+      uvResolution
+    );
+    console.log('[GVRM]   ✅ StyleUNet output: 96ch');
+
+    // Step 10.5.5: Add base_feature: 96ch + 32ch = 128ch
+    console.log('[GVRM]   Adding base_feature (96ch + 32ch = 128ch)...');
+    const features128ch = this.uvStyleUNet.addBaseFeature(styleunetOutput, uvResolution, uvResolution);
+    console.log('[GVRM]   ✅ 128ch features ready');
+
+    // Step 10.5.6: Add view direction encoding: 128ch + 27ch = 155ch
+    console.log('[GVRM]   Adding view direction encoding (128ch + 27ch = 155ch)...');
+    uvFeatureMap = concatenateWithViewEncoding(features128ch, viewDir, uvResolution, uvResolution);
+    console.log('[GVRM]   ✅ 155ch UV features ready (論文準拠)');
 
     // ========== Step 11: Generate UV Gaussians ==========
     console.log('[GVRM] Step 11: Generating UV Gaussians...');
