@@ -68,9 +68,9 @@ export interface GVRMConfig {
   /** 表示コンテナ要素 */
   container?: HTMLElement;
   /**
-   * モバイルモード: 118MB UV StyleUNetをスキップ
-   * true: 32ch UV → 直接拡張して155ch (軽量、低品質)
-   * false: 論文準拠 StyleUNet パイプライン (高品質)
+   * モバイルモード: 軽量StyleUNet (3.69MB) を使用
+   * true: light_styleunet_fp16.onnx (3.69MB, base_ch=32, FP16)
+   * false: uv_styleunet.onnx (118MB, フルモデル)
    * @default false
    */
   mobileMode?: boolean;
@@ -153,11 +153,12 @@ export class GVRM {
       }
     }
 
+    // 常にStyleUNetを作成（モバイルモードでは軽量版を使用）
+    this.uvStyleUNet = new UVStyleUNet();
     if (this.mobileMode) {
-      console.log('[GVRM] 📱 Mobile mode enabled: skipping 118MB UV StyleUNet');
+      console.log('[GVRM] 📱 Mobile mode: using lightweight StyleUNet (3.69MB)');
     } else {
       console.log('[GVRM] 🖥️ Full mode: loading UV StyleUNet (118MB)');
-      this.uvStyleUNet = new UVStyleUNet();
     }
 
     console.log('[GVRM] Using paths:', {
@@ -243,12 +244,15 @@ export class GVRM {
     console.log('[GVRM]   - UV Decoder...');
     await this.uvDecoder.init('/assets');
 
-    // 論文準拠 StyleUNet (デスクトップモードのみ)
+    // UV StyleUNet (論文準拠: 35ch→96ch)
+    // モバイルモードでは軽量版(3.69MB)、デスクトップでは完全版(118MB)
     if (this.uvStyleUNet) {
-      console.log('[GVRM]   - UV StyleUNet (論文準拠: 35ch→96ch)...');
-      await this.uvStyleUNet.init('/assets');
-    } else {
-      console.log('[GVRM]   - UV StyleUNet: SKIPPED (mobile mode)');
+      const modelType = this.mobileMode ? 'lightweight (3.69MB)' : 'full (118MB)';
+      console.log(`[GVRM]   - UV StyleUNet (論文準拠: 35ch→96ch, ${modelType})...`);
+      await this.uvStyleUNet.init({
+        basePath: '/assets',
+        mobileMode: this.mobileMode
+      });
     }
 
     console.log('[GVRM]   - WebGL GPU Rasterizer...');
@@ -534,8 +538,11 @@ export class GVRM {
     let uvFeatureMap: Float32Array;
 
     if (this.uvStyleUNet) {
-      // ========== Full Mode: Paper-compliant StyleUNet pipeline ==========
-      console.log('[GVRM]   🖥️ Full mode: Using StyleUNet pipeline');
+      // ========== StyleUNet pipeline (論文準拠) ==========
+      // モバイルモード: 軽量モデル (3.69MB)
+      // フルモード: 完全モデル (118MB)
+      const modeLabel = this.mobileMode ? '📱 Mobile (lightweight 3.69MB)' : '🖥️ Full (118MB)';
+      console.log(`[GVRM]   ${modeLabel}: Using StyleUNet pipeline`);
 
       // Step 10.5.2: Prepare 3ch RGB (from source image, resample to 512x512)
       console.log('[GVRM]   Preparing 3ch RGB from source image...');

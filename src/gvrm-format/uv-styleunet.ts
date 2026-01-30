@@ -2,8 +2,18 @@
 // UV StyleUNet: 35ch → 96ch (論文準拠)
 // 入力: 32ch UV features + 3ch RGB = 35ch
 // 出力: 96ch UV decoded features
+//
+// モバイルモード: light_styleunet_fp16.onnx (3.69MB)
+// デスクトップモード: uv_styleunet.onnx (118MB)
 
 import * as ort from 'onnxruntime-web/wasm';
+
+export interface UVStyleUNetOptions {
+  /** モバイルモード: 軽量モデル(3.69MB)を使用 */
+  mobileMode?: boolean;
+  /** アセットのベースパス */
+  basePath?: string;
+}
 
 /**
  * UV StyleUNet - UV branch の特徴変換
@@ -16,14 +26,25 @@ export class UVStyleUNet {
   private styleMappingSession: ort.InferenceSession | null = null;
   private baseFeature: Float32Array | null = null;  // [32, 512, 512]
   private initialized = false;
+  private mobileMode = false;
 
   /**
    * 初期化
+   * @param options 初期化オプション
    */
-  async init(basePath: string = '/assets'): Promise<void> {
+  async init(options: UVStyleUNetOptions | string = '/assets'): Promise<void> {
     if (this.initialized) return;
 
+    // 後方互換性: 文字列が渡された場合はbasePathとして扱う
+    const opts: UVStyleUNetOptions = typeof options === 'string'
+      ? { basePath: options }
+      : options;
+
+    const basePath = opts.basePath ?? '/assets';
+    this.mobileMode = opts.mobileMode ?? false;
+
     console.log('[UVStyleUNet] Initializing...');
+    console.log('[UVStyleUNet]   Mode:', this.mobileMode ? 'Mobile (lightweight)' : 'Desktop (full)');
 
     try {
       // ONNX Runtime 設定
@@ -31,9 +52,13 @@ export class UVStyleUNet {
       ort.env.wasm.simd = true;
 
       // 1. UV StyleUNet モデルをロード
-      console.log('[UVStyleUNet] Loading uv_styleunet.onnx...');
+      const modelName = this.mobileMode
+        ? 'light_styleunet_fp16.onnx'  // 3.69MB 軽量モデル
+        : 'uv_styleunet.onnx';          // 118MB フルモデル
+
+      console.log(`[UVStyleUNet] Loading ${modelName}...`);
       this.session = await ort.InferenceSession.create(
-        `${basePath}/uv_styleunet.onnx`,
+        `${basePath}/${modelName}`,
         { executionProviders: ['wasm'] }
       );
       console.log('[UVStyleUNet] ✅ StyleUNet loaded');
