@@ -3,14 +3,12 @@
 // 入力: 32ch UV features + 3ch RGB = 35ch
 // 出力: 96ch UV decoded features
 //
-// モバイルモード: light_styleunet_fp16.onnx (3.69MB)
-// デスクトップモード: uv_styleunet.onnx (118MB)
+// 軽量モデル: light_styleunet_fp16.onnx (3.69MB)
+// Knowledge Distillation + FP16量子化 (118MB → 3.69MB, 32x圧縮)
 
 import * as ort from 'onnxruntime-web/wasm';
 
 export interface UVStyleUNetOptions {
-  /** モバイルモード: 軽量モデル(3.69MB)を使用 */
-  mobileMode?: boolean;
   /** アセットのベースパス */
   basePath?: string;
 }
@@ -26,7 +24,6 @@ export class UVStyleUNet {
   private styleMappingSession: ort.InferenceSession | null = null;
   private baseFeature: Float32Array | null = null;  // [32, 512, 512]
   private initialized = false;
-  private mobileMode = false;
 
   /**
    * 初期化
@@ -41,22 +38,17 @@ export class UVStyleUNet {
       : options;
 
     const basePath = opts.basePath ?? '/assets';
-    this.mobileMode = opts.mobileMode ?? false;
 
     console.log('[UVStyleUNet] Initializing...');
-    console.log('[UVStyleUNet]   Mode:', this.mobileMode ? 'Mobile (lightweight)' : 'Desktop (full)');
 
     try {
       // ONNX Runtime 設定
       ort.env.wasm.numThreads = 1;
       ort.env.wasm.simd = true;
 
-      // 1. UV StyleUNet モデルをロード
-      const modelName = this.mobileMode
-        ? 'light_styleunet_fp16.onnx'  // 3.69MB 軽量モデル
-        : 'uv_styleunet.onnx';          // 118MB フルモデル
-
-      console.log(`[UVStyleUNet] Loading ${modelName}...`);
+      // UV StyleUNet 軽量モデルをロード (3.69MB)
+      const modelName = 'light_styleunet_fp16.onnx';
+      console.log(`[UVStyleUNet] Loading ${modelName} (3.69MB, 32x compressed)...`);
       this.session = await ort.InferenceSession.create(
         `${basePath}/${modelName}`,
         { executionProviders: ['wasm'] }
