@@ -65,6 +65,8 @@ def train_light_styleunet(
     learning_rate: float = 1e-4,
     checkpoint_path: str = None,
     use_synthetic: bool = False,  # True: 合成データ, False: 実データ
+    base_ch: int = 48,  # チャンネル数 (48=標準, 32=軽量)
+    use_fp16: bool = False,  # FP16量子化
 ):
     """
     Knowledge Distillation で軽量 StyleUNet を訓練
@@ -378,8 +380,8 @@ def train_light_styleunet(
             param.requires_grad = False
 
     # Create Student model
-    print("\nCreating Student model...")
-    student = LightStyleUNet(in_ch=35, out_ch=96, base_ch=48, style_dim=512).to(device)
+    print(f"\nCreating Student model (base_ch={base_ch})...")
+    student = LightStyleUNet(in_ch=35, out_ch=96, base_ch=base_ch, style_dim=512).to(device)
 
     student_params = sum(p.numel() for p in student.parameters())
     print(f"  Student parameters: {student_params:,} ({student_params * 4 / 1024 / 1024:.2f} MB)")
@@ -505,18 +507,24 @@ def train_light_styleunet(
     # ============================================================
 
     print(f"\n{'='*60}")
-    print("Exporting best model to ONNX...")
+    print(f"Exporting best model to ONNX (FP16={use_fp16})...")
     print(f"{'='*60}")
 
     best_ckpt = torch.load(f"{VOLUME_PATH}/checkpoints/light_styleunet_best.pt", map_location=device)
     student.load_state_dict(best_ckpt['student_state_dict'])
     student.eval()
 
-    # Dummy inputs
-    dummy_x = torch.randn(1, 35, 512, 512, device=device)
-    dummy_style = torch.randn(1, 512, device=device)
+    # FP16変換
+    if use_fp16:
+        student = student.half()
+        dummy_x = torch.randn(1, 35, 512, 512, device=device, dtype=torch.float16)
+        dummy_style = torch.randn(1, 512, device=device, dtype=torch.float16)
+        onnx_path = f"{VOLUME_PATH}/light_styleunet_fp16.onnx"
+    else:
+        dummy_x = torch.randn(1, 35, 512, 512, device=device)
+        dummy_style = torch.randn(1, 512, device=device)
+        onnx_path = f"{VOLUME_PATH}/light_styleunet.onnx"
 
-    onnx_path = f"{VOLUME_PATH}/light_styleunet.onnx"
     torch.onnx.export(
         student,
         (dummy_x, dummy_style),
@@ -536,6 +544,8 @@ def train_light_styleunet(
     print(f"Exported: {onnx_path}")
     print(f"  Size: {onnx_size:.2f} MB")
     print(f"  Compression: {118 / onnx_size:.1f}x smaller than original")
+    print(f"  Base channels: {base_ch}")
+    print(f"  FP16: {use_fp16}")
 
     # Commit volume
     training_volume.commit()
@@ -550,6 +560,8 @@ def train_light_styleunet(
         'onnx_size_mb': onnx_size,
         'compression_ratio': 118 / onnx_size,
         'data_mode': 'synthetic' if teacher is not None else 'real',
+        'base_ch': base_ch,
+        'fp16': use_fp16,
     }
 
 
@@ -559,7 +571,7 @@ def train_light_styleunet(
     timeout=600,
     volumes={VOLUME_PATH: training_volume},
 )
-def export_onnx_only():
+def export_onnx_only(base_ch: int = 48, use_fp16: bool = False):
     """
     既存のチェックポイントからONNXをエクスポート
     """
@@ -664,19 +676,27 @@ def export_onnx_only():
     # Load checkpoint
     ckpt_path = f"{VOLUME_PATH}/checkpoints/light_styleunet_best.pt"
     print(f"Loading checkpoint: {ckpt_path}")
+    print(f"  base_ch={base_ch}, use_fp16={use_fp16}")
 
-    student = LightStyleUNet(in_ch=35, out_ch=96, base_ch=48, style_dim=512).to(device)
+    student = LightStyleUNet(in_ch=35, out_ch=96, base_ch=base_ch, style_dim=512).to(device)
     ckpt = torch.load(ckpt_path, map_location=device)
     student.load_state_dict(ckpt['student_state_dict'])
     student.eval()
 
     print(f"Loaded checkpoint from epoch {ckpt.get('epoch', 'unknown')}, loss: {ckpt.get('loss', 'unknown')}")
 
-    # Export to ONNX
-    dummy_x = torch.randn(1, 35, 512, 512, device=device)
-    dummy_style = torch.randn(1, 512, device=device)
+    # FP16変換
+    if use_fp16:
+        student = student.half()
+        dummy_x = torch.randn(1, 35, 512, 512, device=device, dtype=torch.float16)
+        dummy_style = torch.randn(1, 512, device=device, dtype=torch.float16)
+        suffix = f"_ch{base_ch}_fp16"
+    else:
+        dummy_x = torch.randn(1, 35, 512, 512, device=device)
+        dummy_style = torch.randn(1, 512, device=device)
+        suffix = f"_ch{base_ch}"
 
-    onnx_path = f"{VOLUME_PATH}/light_styleunet.onnx"
+    onnx_path = f"{VOLUME_PATH}/light_styleunet{suffix}.onnx"
     torch.onnx.export(
         student,
         (dummy_x, dummy_style),
@@ -697,6 +717,8 @@ def export_onnx_only():
     print(f"\nExported: {onnx_path}")
     print(f"  Size: {onnx_size:.2f} MB")
     print(f"  Compression: {118 / onnx_size:.1f}x smaller than original (118MB)")
+    print(f"  Base channels: {base_ch}")
+    print(f"  FP16: {use_fp16}")
 
     training_volume.commit()
 
@@ -704,6 +726,8 @@ def export_onnx_only():
         'onnx_path': onnx_path,
         'onnx_size_mb': onnx_size,
         'compression_ratio': 118 / onnx_size,
+        'base_ch': base_ch,
+        'fp16': use_fp16,
     }
 
 
@@ -715,6 +739,8 @@ def main(
     lr: float = 1e-4,
     resume: str = None,
     use_synthetic: bool = False,
+    base_ch: int = 48,  # 軽量化: 32推奨
+    fp16: bool = False,  # FP16量子化
 ):
     """
     使用方法:
@@ -722,35 +748,42 @@ def main(
     # 実データで学習 (推奨)
     modal run modal_train_light_styleunet.py --epochs 100 --batch-size 2
 
+    # 軽量モデル + FP16で学習 (スマホ向け)
+    modal run modal_train_light_styleunet.py --epochs 100 --base-ch 32 --fp16
+
     # 合成データで学習 (データ抽出前のテスト用)
     modal run modal_train_light_styleunet.py --epochs 50 --use-synthetic
 
     # チェックポイントから再開
     modal run modal_train_light_styleunet.py --resume /vol/checkpoints/light_styleunet_epoch50.pt
 
-    # ONNXエクスポートのみ
-    modal run modal_train_light_styleunet.py --action export
+    # ONNXエクスポートのみ (既存チェックポイントから)
+    modal run modal_train_light_styleunet.py --action export --base-ch 32 --fp16
 
     # 学習後のモデルダウンロード
-    modal volume get guava-training-vol light_styleunet.onnx
+    modal volume get guava-training-vol light_styleunet_ch32_fp16.onnx
     """
     if action == "export":
-        print("Exporting to ONNX from existing checkpoint...")
-        result = export_onnx_only.remote()
+        print(f"Exporting to ONNX (base_ch={base_ch}, fp16={fp16})...")
+        result = export_onnx_only.remote(base_ch=base_ch, use_fp16=fp16)
         print("\n" + "=" * 60)
         print("Export Results:")
         print("=" * 60)
         print(f"  ONNX size: {result['onnx_size_mb']:.2f} MB")
         print(f"  Compression: {result['compression_ratio']:.1f}x")
+        print(f"  Base channels: {result['base_ch']}")
+        print(f"  FP16: {result['fp16']}")
         print(f"\nONNX model saved to: {result['onnx_path']}")
         print("\nTo download the model:")
-        print("  modal volume get guava-training-vol light_styleunet.onnx")
+        print(f"  modal volume get guava-training-vol {result['onnx_path'].split('/')[-1]}")
         return
 
     print("Starting Light StyleUNet distillation training...")
     print(f"  Epochs: {epochs}")
     print(f"  Batch size: {batch_size}")
     print(f"  Learning rate: {lr}")
+    print(f"  Base channels: {base_ch}")
+    print(f"  FP16: {fp16}")
     print(f"  Use synthetic: {use_synthetic}")
 
     result = train_light_styleunet.remote(
@@ -759,6 +792,8 @@ def main(
         learning_rate=lr,
         checkpoint_path=resume,
         use_synthetic=use_synthetic,
+        base_ch=base_ch,
+        use_fp16=fp16,
     )
 
     print("\n" + "=" * 60)
@@ -768,6 +803,8 @@ def main(
     print(f"  Best loss: {result['best_loss']:.6f}")
     print(f"  ONNX size: {result['onnx_size_mb']:.2f} MB")
     print(f"  Compression: {result['compression_ratio']:.1f}x")
+    print(f"  Base channels: {result['base_ch']}")
+    print(f"  FP16: {result['fp16']}")
     print(f"\nONNX model saved to: {result['onnx_path']}")
     print("\nTo download the model:")
-    print("  modal volume get guava-training-vol light_styleunet.onnx")
+    print(f"  modal volume get guava-training-vol {result['onnx_path'].split('/')[-1]}")
