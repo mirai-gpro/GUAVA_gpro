@@ -42,6 +42,7 @@ image = (
         "pillow",
         "tqdm",
         "tensorboard",
+        "onnx",  # ONNX export用
     )
 )
 
