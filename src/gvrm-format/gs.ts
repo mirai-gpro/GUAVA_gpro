@@ -41,9 +41,8 @@ const vertexShader = `
     // ポイントサイズ: Gaussianスケールと距離に基づく
     // スケールの平均を使用（異方性スケールの近似）
     float avgScale = (gaussianScale.x + gaussianScale.y + gaussianScale.z) / 3.0;
-    // Python準拠: sigmoid(x) * 0.05 が既に適用済み（範囲 [0, 0.05]）
-    // スケールを表示用にマッピング（0.05 → ~150ピクセル相当）
-    float scaleFactor = avgScale * 3000.0;
+    // スケール値を適切な範囲にマップ（学習済みスケールは通常-5〜2程度）
+    float scaleFactor = exp(clamp(avgScale, -5.0, 2.0));
 
     // 距離に応じたサイズ調整
     float depth = -mvPosition.z;
@@ -74,8 +73,9 @@ const fragmentShader = `
     // 端で完全に透明
     if (dist > 0.5) discard;
 
-    // 不透明度を適用（Python準拠: sigmoid既に適用済み、範囲 [0,1]）
-    float alpha = vOpacity;
+    // 不透明度を適用（sigmoid活性化されたopacity）
+    // opacity値は学習済みなので、sigmoidで[0,1]に変換
+    float alpha = 1.0 / (1.0 + exp(-vOpacity));
     alpha *= gaussian;
 
     // α < 0.01 はスキップ
@@ -100,8 +100,7 @@ const accumulateFragShader = `
 
     if (dist > 0.5) discard;
 
-    // Python準拠: sigmoid既に適用済み、範囲 [0,1]
-    float alpha = vOpacity;
+    float alpha = 1.0 / (1.0 + exp(-vOpacity));
     alpha *= gaussian;
 
     if (alpha < 0.01) discard;
