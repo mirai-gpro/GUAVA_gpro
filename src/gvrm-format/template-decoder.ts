@@ -120,10 +120,36 @@ export class TemplateDecoder {
     const elapsed = performance.now() - startTime;
     console.log(`[TemplateDecoder] ✅ Inference: ${elapsed.toFixed(2)}ms`);
 
+    // Raw outputs from ONNX
+    const rawScale = outputs.scale.data as Float32Array;
+    const rawOpacity = outputs.opacity.data as Float32Array;
+
+    // Apply Python-compatible transformations (feature_decoder.py Vertex_GS_Decoder)
+    // scales = torch.sigmoid(scales) * 0.05
+    // opacities = torch.sigmoid(opacities)
+    const processedScale = new Float32Array(rawScale.length);
+    const processedOpacity = new Float32Array(rawOpacity.length);
+
+    for (let i = 0; i < rawScale.length; i++) {
+      // sigmoid(x) * 0.05 for scales
+      processedScale[i] = (1 / (1 + Math.exp(-rawScale[i]))) * 0.05;
+    }
+
+    for (let i = 0; i < rawOpacity.length; i++) {
+      // sigmoid(x) for opacity
+      processedOpacity[i] = 1 / (1 + Math.exp(-rawOpacity[i]));
+    }
+
+    console.log(`[TemplateDecoder] Scale stats after sigmoid*0.05:`, {
+      min: Math.min(...Array.from(processedScale.slice(0, 1000))),
+      max: Math.max(...Array.from(processedScale.slice(0, 1000))),
+      sample: processedScale[0]
+    });
+
     return {
       latent32ch: outputs.latent_32ch.data as Float32Array,
-      opacity: outputs.opacity.data as Float32Array,
-      scale: outputs.scale.data as Float32Array,
+      opacity: processedOpacity,
+      scale: processedScale,
       rotation: outputs.rotation.data as Float32Array
     };
   }

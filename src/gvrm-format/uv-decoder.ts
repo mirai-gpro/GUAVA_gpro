@@ -474,13 +474,21 @@ export class UVDecoder {
       localPositions[i * 3 + 1] = getChannelValue(localPos, 1, v, u, 3);
       localPositions[i * 3 + 2] = getChannelValue(localPos, 2, v, u, 3);
       
-      // Opacity (1ch)
-      opacityOut[i] = getChannelValue(opacity, 0, v, u, 1);
-      
-      // Scale (3ch)
-      scaleOut[i * 3 + 0] = getChannelValue(scale, 0, v, u, 3);
-      scaleOut[i * 3 + 1] = getChannelValue(scale, 1, v, u, 3);
-      scaleOut[i * 3 + 2] = getChannelValue(scale, 2, v, u, 3);
+      // Opacity (1ch) - Python準拠: sigmoid(opacity)
+      const rawOpacity = getChannelValue(opacity, 0, v, u, 1);
+      opacityOut[i] = 1 / (1 + Math.exp(-rawOpacity));
+
+      // Scale (3ch) - Python準拠: exp(scales) for UV_Point_GS_Decoder
+      // Note: UV Decoder uses exp(), Template Decoder uses sigmoid*0.05
+      const rawScale0 = getChannelValue(scale, 0, v, u, 3);
+      const rawScale1 = getChannelValue(scale, 1, v, u, 3);
+      const rawScale2 = getChannelValue(scale, 2, v, u, 3);
+      // Clamp before exp to avoid overflow
+      const SCALE_CLAMP_MIN = -10.0;
+      const SCALE_CLAMP_MAX = 5.0;
+      scaleOut[i * 3 + 0] = Math.exp(Math.max(SCALE_CLAMP_MIN, Math.min(SCALE_CLAMP_MAX, rawScale0)));
+      scaleOut[i * 3 + 1] = Math.exp(Math.max(SCALE_CLAMP_MIN, Math.min(SCALE_CLAMP_MAX, rawScale1)));
+      scaleOut[i * 3 + 2] = Math.exp(Math.max(SCALE_CLAMP_MIN, Math.min(SCALE_CLAMP_MAX, rawScale2)));
       
       // Rotation (4ch)
       rotationOut[i * 4 + 0] = getChannelValue(rotation, 0, v, u, 4);
