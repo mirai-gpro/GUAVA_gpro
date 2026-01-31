@@ -120,9 +120,9 @@ export class TemplateDecoder {
     const baseTensor = new ort.Tensor('float32', baseFeature, [numVertices, 128]);
     const idTensor = new ort.Tensor('float32', idEmbedding, [768]);
 
-    // 明示的な入力名（ONNXモデルの入力名に合わせて修正が必要な場合あり）
+    // 明示的な入力名（元のtemplate_decoder_full.onnxと同じ）
     const outputs = await this.session.run({
-      projection_features: projTensor,
+      projection_feature: projTensor,   // 単数形（元の版と同じ）
       base_feature: baseTensor,
       id_embedding: idTensor
     });
