@@ -515,12 +515,8 @@ export class GVRM {
     }
     console.log('[GVRM]   ✅ 32ch UV features prepared (518→512, CHW format)');
 
-    // View direction for both modes
-    const viewDir = computeViewDirection(
-      sourceCameraConfig.position,
-      sourceCameraConfig.target
-    );
-    console.log('[GVRM]   View direction:', viewDir);
+    // View direction (already computed at Step 4)
+    console.log('[GVRM]   View direction (reusing from Step 4):', viewDir);
 
     let uvFeatureMap: Float32Array;
 
