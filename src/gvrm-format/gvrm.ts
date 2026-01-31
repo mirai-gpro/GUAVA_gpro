@@ -95,6 +95,9 @@ export class GVRM {
   // Lip-sync state
   private currentLipSyncLevel: number = 0;
 
+  // Neural Refiner用のidEmbedding (256ch)
+  private idEmbedding256: Float32Array | null = null;
+
   /**
    * コンストラクタ
    * @param displayContainer 表示コンテナ（オプション、init()のconfigでも指定可能）
@@ -151,13 +154,22 @@ export class GVRM {
     });
 
     try {
-      // Initialize display if container was provided
+      // Auto-detect display container if not provided
+      if (!this.displayContainer) {
+        const autoContainer = document.getElementById('avatar3DContainer');
+        if (autoContainer) {
+          this.displayContainer = autoContainer;
+          console.log('[GVRM] Auto-detected display container: #avatar3DContainer');
+        }
+      }
+
+      // Initialize WebGL display
       if (this.displayContainer) {
         console.log('[GVRM] Initializing WebGL display...');
         this.display = new WebGLDisplay(this.displayContainer, 512, 512);
         console.log('[GVRM] ✅ WebGL display initialized');
       } else {
-        console.warn('[GVRM] No display container provided, skipping display initialization');
+        console.warn('[GVRM] No display container found, skipping display initialization');
       }
 
       console.log('[GVRM] 🚀 Starting GUAVA Pipeline (WebGL GPU mode)...');
@@ -167,6 +179,12 @@ export class GVRM {
 
       this.initialized = true;
       console.log('[GVRM] ✅ Initialization successful');
+
+      // Initial render to display avatar
+      if (this.display) {
+        console.log('[GVRM] Performing initial render...');
+        await this.render();
+      }
 
     } catch (error) {
       console.error('[GVRM] ❌ Initialization failed:', error);
@@ -281,6 +299,12 @@ export class GVRM {
       rotations: templateOutput.rotation,
       latents: templateOutput.rgb  // 新版: rgb (旧版: latent32ch)
     };
+
+    // Store idEmbedding256 for Neural Refiner
+    if (templateOutput.idEmbedding256) {
+      this.idEmbedding256 = templateOutput.idEmbedding256;
+      console.log('[GVRM]   idEmbedding256 stored:', this.idEmbedding256.length, 'elements');
+    }
     
     console.log('[GVRM] ✅ Template Gaussians generated:', {
       vertices: templateVertexCount.toLocaleString(),
@@ -467,6 +491,22 @@ export class GVRM {
       match: uvBranchFeatures.length === expectedSize ? '✅' : '❌'
     });
     
+    // 🔍 Debug: Raw UV features statistics
+    let rawMin = Infinity, rawMax = -Infinity, rawSum = 0, rawNonZero = 0;
+    for (let i = 0; i < uvBranchFeatures.length; i++) {
+      const v = uvBranchFeatures[i];
+      if (v < rawMin) rawMin = v;
+      if (v > rawMax) rawMax = v;
+      rawSum += v;
+      if (v !== 0) rawNonZero++;
+    }
+    console.log('[GVRM] 🔍 Raw UV branch features stats:', {
+      min: rawMin.toFixed(4),
+      max: rawMax.toFixed(4),
+      mean: (rawSum / uvBranchFeatures.length).toFixed(4),
+      nonZeroRatio: (rawNonZero / uvBranchFeatures.length * 100).toFixed(1) + '%'
+    });
+
     console.log('[GVRM] ✅ Inverse Texture Mapping preparation complete');
 
     // ========== Step 10.5: Build 155ch UV features (論文準拠) ==========
@@ -514,6 +554,22 @@ export class GVRM {
       }
     }
     console.log('[GVRM]   ✅ 32ch UV features prepared (518→512, CHW format)');
+
+    // 🔍 Debug: UV features statistics
+    let uvMin = Infinity, uvMax = -Infinity, uvSum = 0, uvNonZero = 0;
+    for (let i = 0; i < uvFeatures32ch.length; i++) {
+      const v = uvFeatures32ch[i];
+      if (v < uvMin) uvMin = v;
+      if (v > uvMax) uvMax = v;
+      uvSum += v;
+      if (v !== 0) uvNonZero++;
+    }
+    console.log('[GVRM]   🔍 UV features 32ch stats:', {
+      min: uvMin.toFixed(4),
+      max: uvMax.toFixed(4),
+      mean: (uvSum / uvFeatures32ch.length).toFixed(4),
+      nonZeroRatio: (uvNonZero / uvFeatures32ch.length * 100).toFixed(1) + '%'
+    });
 
     // View direction (already computed at Step 4)
     console.log('[GVRM]   View direction (reusing from Step 4):', viewDir);
@@ -638,24 +694,34 @@ export class GVRM {
     return result;
   }
 
-  async render(targetImageUrl: string): Promise<ImageData | null> {
+  async render(): Promise<void> {
     if (!this.initialized || !this.gsViewer) {
       throw new Error('[GVRM] Not initialized');
     }
 
     if (!this.display) {
       console.warn('[GVRM] No display available, skipping render');
-      return null;
+      return;
     }
 
-    // Step 1: Render coarse feature map
-    const coarseFeatureMap = this.gsViewer.render();
+    if (!this.idEmbedding256) {
+      console.warn('[GVRM] No idEmbedding256 available, skipping render');
+      return;
+    }
 
-    // Step 2: Neural refinement
-    const refinedImage = await this.neuralRefiner.refine(coarseFeatureMap);
+    console.log('[GVRM] Rendering avatar...');
+
+    // Step 1: Render coarse feature map (32ch)
+    const coarseFeatureMap = this.gsViewer.render();
+    console.log('[GVRM]   Coarse feature map rendered:', coarseFeatureMap.length);
+
+    // Step 2: Neural refinement (32ch → 3ch RGB)
+    const refinedImage = await this.neuralRefiner.run(coarseFeatureMap, this.idEmbedding256);
+    console.log('[GVRM]   Neural refinement complete:', refinedImage.length);
 
     // Step 3: Display
-    return this.display.display(refinedImage);
+    this.display.display(refinedImage);
+    console.log('[GVRM] ✅ Avatar rendered');
   }
 
   /**
