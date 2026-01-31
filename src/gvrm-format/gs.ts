@@ -264,6 +264,169 @@ export class GSViewer {
     (this.mesh.material as THREE.ShaderMaterial).uniforms.basePointSize.value = size;
   }
 
+  /**
+   * Render 32ch coarse feature map
+   * 論文 Section 3.3: "splatting → coarse feature map (32ch) → refiner → RGB"
+   *
+   * @param width Output width (default 512)
+   * @param height Output height (default 512)
+   * @param camera Camera for projection (optional, uses default if not provided)
+   * @returns Float32Array [32, height, width] in CHW format
+   */
+  public render(width: number = 512, height: number = 512, camera?: THREE.Camera): Float32Array {
+    console.log('[GSViewer] Rendering 32ch coarse feature map...');
+
+    const featureMap = new Float32Array(32 * height * width);
+    const weightMap = new Float32Array(height * width);  // For normalization
+
+    // Default camera if not provided
+    const projMatrix = camera
+      ? new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+      : this.createDefaultProjection(width, height);
+
+    // Get position attribute
+    const posAttr = this.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const positions = posAttr.array as Float32Array;
+
+    // Compute depths for sorting
+    const gaussianDepths: { index: number; depth: number }[] = [];
+    const tempVec = new THREE.Vector4();
+
+    for (let i = 0; i < this.vertexCount; i++) {
+      tempVec.set(
+        positions[i * 3],
+        positions[i * 3 + 1],
+        positions[i * 3 + 2],
+        1.0
+      );
+      tempVec.applyMatrix4(projMatrix);
+      const depth = tempVec.z / tempVec.w;
+      gaussianDepths.push({ index: i, depth });
+    }
+
+    // Sort by depth (front to back for transmittance)
+    gaussianDepths.sort((a, b) => a.depth - b.depth);
+
+    // Transmittance buffer (per pixel)
+    const transmittance = new Float32Array(height * width).fill(1.0);
+
+    let splatCount = 0;
+
+    // Splat each Gaussian
+    for (const { index: i, depth } of gaussianDepths) {
+      // Skip if behind camera
+      if (depth < -1 || depth > 1) continue;
+
+      // Project to screen space
+      tempVec.set(
+        positions[i * 3],
+        positions[i * 3 + 1],
+        positions[i * 3 + 2],
+        1.0
+      );
+      tempVec.applyMatrix4(projMatrix);
+
+      if (tempVec.w <= 0) continue;
+
+      const ndcX = tempVec.x / tempVec.w;
+      const ndcY = tempVec.y / tempVec.w;
+
+      // NDC to pixel coordinates
+      const px = Math.floor((ndcX * 0.5 + 0.5) * width);
+      const py = Math.floor((1.0 - (ndcY * 0.5 + 0.5)) * height);  // Y-flip
+
+      // Get Gaussian attributes
+      const opacity = this.opacityData[i];
+      const alpha = 1.0 / (1.0 + Math.exp(-opacity));  // sigmoid
+
+      // Get scale for splat radius
+      const scaleX = this.scaleData[i * 3];
+      const scaleY = this.scaleData[i * 3 + 1];
+      const scaleZ = this.scaleData[i * 3 + 2];
+      const avgScale = (Math.exp(scaleX) + Math.exp(scaleY) + Math.exp(scaleZ)) / 3;
+
+      // Compute splat radius in pixels (simplified)
+      const depthFactor = Math.max(0.1, 1.0 - depth * 0.5);
+      const radius = Math.max(1, Math.min(16, avgScale * 50 * depthFactor));
+
+      // Splat to neighboring pixels
+      const r = Math.ceil(radius);
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const x = px + dx;
+          const y = py + dy;
+
+          if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+          // Gaussian falloff
+          const dist2 = (dx * dx + dy * dy) / (radius * radius);
+          if (dist2 > 1.0) continue;
+
+          const gaussian = Math.exp(-dist2 * 2.0);
+          const pixelAlpha = alpha * gaussian;
+
+          if (pixelAlpha < 0.001) continue;
+
+          const pixelIdx = y * width + x;
+          const T = transmittance[pixelIdx];
+
+          if (T < 0.001) continue;  // Pixel fully occluded
+
+          // Accumulate 32ch latent features
+          // Formula: C += c_i * α_i * T_i
+          const weight = pixelAlpha * T;
+          for (let c = 0; c < 32; c++) {
+            const latentValue = this.latentData[i * 32 + c];
+            featureMap[c * height * width + pixelIdx] += latentValue * weight;
+          }
+          weightMap[pixelIdx] += weight;
+
+          // Update transmittance: T_{i+1} = T_i * (1 - α_i)
+          transmittance[pixelIdx] *= (1.0 - pixelAlpha);
+        }
+      }
+
+      splatCount++;
+    }
+
+    // Normalize by accumulated weight (optional, for proper blending)
+    for (let pixelIdx = 0; pixelIdx < height * width; pixelIdx++) {
+      const w = weightMap[pixelIdx];
+      if (w > 0.001) {
+        for (let c = 0; c < 32; c++) {
+          featureMap[c * height * width + pixelIdx] /= w;
+        }
+      }
+    }
+
+    console.log('[GSViewer] ✅ Coarse feature map rendered:', {
+      resolution: `${width}×${height}`,
+      channels: 32,
+      splattedGaussians: splatCount,
+      format: 'CHW'
+    });
+
+    return featureMap;
+  }
+
+  private createDefaultProjection(width: number, height: number): THREE.Matrix4 {
+    // Default camera: looking at origin from z=5
+    const fov = 45;
+    const aspect = width / height;
+    const near = 0.1;
+    const far = 100;
+
+    const camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
+    camera.position.set(0, 1.2, 5);
+    camera.lookAt(0, 1.2, 0);
+    camera.updateMatrixWorld();
+
+    return new THREE.Matrix4().multiplyMatrices(
+      camera.projectionMatrix,
+      camera.matrixWorldInverse
+    );
+  }
+
   public dispose() {
     this.geometry.dispose();
     (this.mesh.material as THREE.Material).dispose();
