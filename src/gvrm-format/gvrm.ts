@@ -735,29 +735,64 @@ export class GVRM {
   /**
    * UV Gaussians のワールド座標を計算
    * Python版準拠: メッシュ表面の座標 + ローカルオフセット
-   * @param uvMapping UV rasterization の結果
+   *
+   * CRITICAL FIX: uvMapping.uvCoords はピクセル座標(Uint16Array)であり、
+   * 正規化座標(0-1)ではない！直接使用する必要がある。
+   *
+   * @param uvMapping UV rasterization の結果（WebGLラスタライザからの出力）
    * @param localPositions UV Decoder からのローカルオフセット [N, 3]
    * @param uvCount 有効なUVピクセル数
    */
   private computeUVWorldPositions(
-    uvMapping: { worldPositions: Float32Array; uvCoords: Float32Array; width: number; height: number },
+    uvMapping: { worldPositions: Float32Array; uvCoords: Uint16Array; width: number; height: number },
     localPositions: Float32Array,
     uvCount: number
   ): Float32Array {
     const worldPositions = new Float32Array(uvCount * 3);
     const mappingWidth = uvMapping.width;
     const mappingHeight = uvMapping.height;
+    const totalPixels = mappingWidth * mappingHeight;
 
     let validCount = 0;
+    let invalidCount = 0;
     let localSum = 0;
 
+    // Debug: サンプルチェック
+    if (uvCount > 0) {
+      const sampleU = uvMapping.uvCoords[0];
+      const sampleV = uvMapping.uvCoords[1];
+      console.log('[GVRM]   UV coord sample (first pixel):', {
+        u: sampleU, v: sampleV,
+        expectedRange: `0-${mappingWidth - 1}`,
+        isPixelCoord: sampleU < mappingWidth && sampleV < mappingHeight
+      });
+    }
+
     for (let i = 0; i < uvCount; i++) {
-      // UV座標からピクセルインデックスを計算
-      const uNorm = uvMapping.uvCoords[i * 2 + 0];  // 0-1 normalized
-      const vNorm = uvMapping.uvCoords[i * 2 + 1];
-      const u = Math.floor(uNorm * mappingWidth);
-      const v = Math.floor(vNorm * mappingHeight);
+      // CRITICAL: uvCoords は絶対ピクセル座標（Uint16Array: 0 to resolution-1）
+      // 正規化座標ではないので、直接使用する
+      const u = uvMapping.uvCoords[i * 2 + 0];  // ピクセル座標（0 to width-1）
+      const v = uvMapping.uvCoords[i * 2 + 1];  // ピクセル座標（0 to height-1）
+
+      // 境界チェック
+      if (u >= mappingWidth || v >= mappingHeight) {
+        if (invalidCount < 5) {
+          console.warn(`[GVRM]   Invalid UV pixel coord at ${i}: (${u}, ${v}) >= (${mappingWidth}, ${mappingHeight})`);
+        }
+        invalidCount++;
+        continue;
+      }
+
       const pixelIdx = v * mappingWidth + u;
+
+      // 境界チェック（worldPositions配列）
+      if (pixelIdx >= totalPixels) {
+        if (invalidCount < 5) {
+          console.warn(`[GVRM]   Invalid pixel index: ${pixelIdx} >= ${totalPixels}`);
+        }
+        invalidCount++;
+        continue;
+      }
 
       // メッシュ表面のワールド座標を取得
       const surfaceX = uvMapping.worldPositions[pixelIdx * 3 + 0];
@@ -775,15 +810,54 @@ export class GVRM {
       worldPositions[i * 3 + 1] = surfaceY + localY;
       worldPositions[i * 3 + 2] = surfaceZ + localZ;
 
-      if (!isNaN(surfaceX)) validCount++;
+      if (!isNaN(surfaceX) && surfaceX !== 0) validCount++;
       localSum += Math.abs(localX) + Math.abs(localY) + Math.abs(localZ);
+    }
+
+    // サーフェス位置のサンプル出力
+    if (validCount > 0) {
+      let sampleIdx = -1;
+      for (let i = 0; i < Math.min(100, uvCount); i++) {
+        const u = uvMapping.uvCoords[i * 2 + 0];
+        const v = uvMapping.uvCoords[i * 2 + 1];
+        if (u < mappingWidth && v < mappingHeight) {
+          const pixelIdx = v * mappingWidth + u;
+          const sx = uvMapping.worldPositions[pixelIdx * 3 + 0];
+          if (!isNaN(sx) && sx !== 0) {
+            console.log('[GVRM]   Sample surface position:', {
+              i,
+              uvPixel: [u, v],
+              surfacePos: [
+                uvMapping.worldPositions[pixelIdx * 3 + 0].toFixed(4),
+                uvMapping.worldPositions[pixelIdx * 3 + 1].toFixed(4),
+                uvMapping.worldPositions[pixelIdx * 3 + 2].toFixed(4)
+              ],
+              localOffset: [
+                localPositions[i * 3 + 0].toFixed(4),
+                localPositions[i * 3 + 1].toFixed(4),
+                localPositions[i * 3 + 2].toFixed(4)
+              ]
+            });
+            break;
+          }
+        }
+      }
     }
 
     console.log('[GVRM]   UV world positions computed:', {
       count: uvCount,
       validSurfacePositions: validCount,
+      invalidCoords: invalidCount,
       avgLocalOffset: (localSum / uvCount / 3).toFixed(4)
     });
+
+    if (validCount === 0) {
+      console.error('[GVRM] ❌ CRITICAL: All surface positions are invalid!');
+      console.error('[GVRM]   This means UV mapping worldPositions lookup is failing');
+      console.error('[GVRM]   Check: worldPositions array size =', uvMapping.worldPositions.length);
+      console.error('[GVRM]   Check: First few worldPositions:',
+        Array.from(uvMapping.worldPositions.slice(0, 15)).map(v => v.toFixed(4)));
+    }
 
     return worldPositions;
   }
