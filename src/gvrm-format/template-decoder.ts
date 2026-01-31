@@ -45,7 +45,7 @@ export class TemplateDecoder {
 
       // ONNXモデルをロード
       this.session = await ort.InferenceSession.create(
-        `${basePath}/template_decoder_full.onnx`,
+        `${basePath}/template_decoder.onnx`,
         { 
           executionProviders: ['wasm'],
           graphOptimizationLevel: 'all',
