@@ -467,6 +467,22 @@ export class GVRM {
       match: uvBranchFeatures.length === expectedSize ? '✅' : '❌'
     });
     
+    // 🔍 Debug: Raw UV features statistics
+    let rawMin = Infinity, rawMax = -Infinity, rawSum = 0, rawNonZero = 0;
+    for (let i = 0; i < uvBranchFeatures.length; i++) {
+      const v = uvBranchFeatures[i];
+      if (v < rawMin) rawMin = v;
+      if (v > rawMax) rawMax = v;
+      rawSum += v;
+      if (v !== 0) rawNonZero++;
+    }
+    console.log('[GVRM] 🔍 Raw UV branch features stats:', {
+      min: rawMin.toFixed(4),
+      max: rawMax.toFixed(4),
+      mean: (rawSum / uvBranchFeatures.length).toFixed(4),
+      nonZeroRatio: (rawNonZero / uvBranchFeatures.length * 100).toFixed(1) + '%'
+    });
+
     console.log('[GVRM] ✅ Inverse Texture Mapping preparation complete');
 
     // ========== Step 10.5: Build 155ch UV features (論文準拠) ==========
@@ -514,6 +530,22 @@ export class GVRM {
       }
     }
     console.log('[GVRM]   ✅ 32ch UV features prepared (518→512, CHW format)');
+
+    // 🔍 Debug: UV features statistics
+    let uvMin = Infinity, uvMax = -Infinity, uvSum = 0, uvNonZero = 0;
+    for (let i = 0; i < uvFeatures32ch.length; i++) {
+      const v = uvFeatures32ch[i];
+      if (v < uvMin) uvMin = v;
+      if (v > uvMax) uvMax = v;
+      uvSum += v;
+      if (v !== 0) uvNonZero++;
+    }
+    console.log('[GVRM]   🔍 UV features 32ch stats:', {
+      min: uvMin.toFixed(4),
+      max: uvMax.toFixed(4),
+      mean: (uvSum / uvFeatures32ch.length).toFixed(4),
+      nonZeroRatio: (uvNonZero / uvFeatures32ch.length * 100).toFixed(1) + '%'
+    });
 
     // View direction (already computed at Step 4)
     console.log('[GVRM]   View direction (reusing from Step 4):', viewDir);
