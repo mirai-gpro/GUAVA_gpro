@@ -109,7 +109,8 @@ export class TemplateDecoder {
 
     const projTensor = new ort.Tensor('float32', projectionFeature, [numVertices, 128]);
     const baseTensor = new ort.Tensor('float32', baseFeature, [numVertices, 128]);
-    const idTensor = new ort.Tensor('float32', idEmbedding, [256]);
+    // 論文: DINOv2 CLS token = 768次元 (global_mappingはONNXモデル内包)
+    const idTensor = new ort.Tensor('float32', idEmbedding, [768]);
 
     const outputs = await this.session.run({
       projection_feature: projTensor,
