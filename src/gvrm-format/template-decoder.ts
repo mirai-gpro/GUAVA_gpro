@@ -1,7 +1,9 @@
 // template-decoder.ts
 // GUAVA Template Decoder - WASM直接指定版
+// 新版 template_decoder.onnx 対応
 
 import * as ort from 'onnxruntime-web/wasm';
+import { encodeViewDirection } from './view-encoding';
 
 interface GeometryData {
   vTemplate: Float32Array;
@@ -11,10 +13,12 @@ interface GeometryData {
 }
 
 export interface TemplateGaussianOutput {
-  latent32ch: Float32Array;
-  opacity: Float32Array;
-  scale: Float32Array;
-  rotation: Float32Array;
+  rgb: Float32Array;          // [N, 32] - 新版では 'rgb' (旧版: latent_32ch)
+  opacity: Float32Array;      // [N, 1]
+  scale: Float32Array;        // [N, 3]
+  rotation: Float32Array;     // [N, 4]
+  offset?: Float32Array;      // [N, 3] - 新版で追加
+  idEmbedding256?: Float32Array; // [256] - 新版で追加
 }
 
 export class TemplateDecoder {
@@ -101,7 +105,8 @@ export class TemplateDecoder {
 
   async generate(
     projectionFeature: Float32Array,
-    idEmbedding: Float32Array
+    globalEmbedding: Float32Array,
+    viewDir: [number, number, number] = [0, 0, 1]  // デフォルト: 正面
   ): Promise<TemplateGaussianOutput> {
     if (!this.session || !this.geometryData) {
       throw new Error('[TemplateDecoder] Not initialized');
@@ -111,30 +116,37 @@ export class TemplateDecoder {
 
     const startTime = performance.now();
 
-    // デバッグ: ONNXモデルが期待する入力名を表示
-    console.log('[TemplateDecoder] 🔍 ONNX expects inputs:', this.session.inputNames);
-    console.log('[TemplateDecoder] 🔍 ONNX output names:', this.session.outputNames);
+    // View direction を 27次元 SH encoding に変換
+    const viewDirs = encodeViewDirection(viewDir);
+    console.log('[TemplateDecoder] 📐 View direction:', viewDir, '→ 27ch SH encoding');
 
-    // テンソル作成
+    // テンソル作成（新版 template_decoder.onnx のインターフェース）
     const projTensor = new ort.Tensor('float32', projectionFeature, [numVertices, 128]);
+    const globalTensor = new ort.Tensor('float32', globalEmbedding, [768]);
     const baseTensor = new ort.Tensor('float32', baseFeature, [numVertices, 128]);
-    const idTensor = new ort.Tensor('float32', idEmbedding, [768]);
+    const viewTensor = new ort.Tensor('float32', viewDirs, [27]);
 
-    // 明示的な入力名（元のtemplate_decoder_full.onnxと同じ）
+    // 新版 ONNX 入力名:
+    // ['projection_features', 'global_embedding', 'base_features', 'view_dirs']
     const outputs = await this.session.run({
-      projection_feature: projTensor,   // 単数形（元の版と同じ）
-      base_feature: baseTensor,
-      id_embedding: idTensor
+      projection_features: projTensor,
+      global_embedding: globalTensor,
+      base_features: baseTensor,
+      view_dirs: viewTensor
     });
 
     const elapsed = performance.now() - startTime;
     console.log(`[TemplateDecoder] ✅ Inference: ${elapsed.toFixed(2)}ms`);
 
+    // 新版 ONNX 出力名:
+    // ['rgb', 'opacity', 'scale', 'rotation', 'offset', 'id_embedding_256']
     return {
-      latent32ch: outputs.latent_32ch.data as Float32Array,
+      rgb: outputs.rgb.data as Float32Array,
       opacity: outputs.opacity.data as Float32Array,
       scale: outputs.scale.data as Float32Array,
-      rotation: outputs.rotation.data as Float32Array
+      rotation: outputs.rotation.data as Float32Array,
+      offset: outputs.offset?.data as Float32Array,
+      idEmbedding256: outputs.id_embedding_256?.data as Float32Array
     };
   }
 
