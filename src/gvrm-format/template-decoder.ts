@@ -121,10 +121,11 @@ export class TemplateDecoder {
     console.log('[TemplateDecoder] 📐 View direction:', viewDir, '→ 27ch SH encoding');
 
     // テンソル作成（新版 template_decoder.onnx のインターフェース）
-    const projTensor = new ort.Tensor('float32', projectionFeature, [numVertices, 128]);
-    const globalTensor = new ort.Tensor('float32', globalEmbedding, [768]);
-    const baseTensor = new ort.Tensor('float32', baseFeature, [numVertices, 128]);
-    const viewTensor = new ort.Tensor('float32', viewDirs, [27]);
+    // バッチ次元を追加: [N, C] → [1, N, C]
+    const projTensor = new ort.Tensor('float32', projectionFeature, [1, numVertices, 128]);
+    const globalTensor = new ort.Tensor('float32', globalEmbedding, [1, 768]);
+    const baseTensor = new ort.Tensor('float32', baseFeature, [1, numVertices, 128]);
+    const viewTensor = new ort.Tensor('float32', viewDirs, [1, 27]);
 
     // 新版 ONNX 入力名:
     // ['projection_features', 'global_embedding', 'base_features', 'view_dirs']
