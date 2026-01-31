@@ -56,6 +56,10 @@ export class TemplateDecoder {
 
       console.log('[TemplateDecoder] ✅ Model loaded');
 
+      // Debug: ONNXモデルの入力/出力名を確認
+      console.log('[TemplateDecoder] 🔍 Input names:', this.session.inputNames);
+      console.log('[TemplateDecoder] 🔍 Output names:', this.session.outputNames);
+
       await this.loadGeometryData(basePath);
 
       this.initialized = true;
