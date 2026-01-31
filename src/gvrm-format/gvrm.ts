@@ -318,6 +318,9 @@ export class GVRM {
       latents: templateOutput.rgb  // 新版: rgb (旧版: latent32ch)
     };
 
+    // Python版準拠: 最初の3チャンネルにsigmoidを適用してRGBに変換
+    this.applySigmoidToRGB(this.templateGaussians.latents, templateVertexCount);
+
     // Store idEmbedding256 for Neural Refiner
     if (templateOutput.idEmbedding256) {
       this.idEmbedding256 = templateOutput.idEmbedding256;
@@ -646,6 +649,9 @@ export class GVRM {
       count: this.uvGaussians.uvCount
     });
 
+    // Python版準拠: UV Gaussians の最初の3チャンネルにsigmoidを適用
+    this.applySigmoidToRGB(this.uvGaussians.latent32ch, this.uvGaussians.uvCount);
+
     // ========== Step 12: Create Ubody Gaussians (Template ⊕ UV) ==========
     console.log('[GVRM] Step 12: Creating Ubody Gaussians (Template ⊕ UV)...');
 
@@ -710,6 +716,36 @@ export class GVRM {
     result.set(a, 0);
     result.set(b, a.length);
     return result;
+  }
+
+  /**
+   * 32ch latent features の最初の3チャンネル(RGB)にsigmoidを適用
+   * Python版準拠: ubody_gaussian.py lines 186-187
+   * @param latents [N, 32] 形式のlatent features
+   * @param numVertices 頂点数
+   */
+  private applySigmoidToRGB(latents: Float32Array, numVertices: number): void {
+    console.log('[GVRM] Applying sigmoid to first 3 channels (RGB)...');
+
+    // latents is [N, 32] flattened, so latents[i * 32 + c] is channel c of vertex i
+    for (let i = 0; i < numVertices; i++) {
+      for (let c = 0; c < 3; c++) {  // Only first 3 channels (RGB)
+        const idx = i * 32 + c;
+        const raw = latents[idx];
+        latents[idx] = 1.0 / (1.0 + Math.exp(-raw));  // sigmoid
+      }
+    }
+
+    // Debug: check RGB range after sigmoid
+    let minRGB = Infinity, maxRGB = -Infinity;
+    for (let i = 0; i < Math.min(1000, numVertices); i++) {
+      for (let c = 0; c < 3; c++) {
+        const v = latents[i * 32 + c];
+        if (v < minRGB) minRGB = v;
+        if (v > maxRGB) maxRGB = v;
+      }
+    }
+    console.log('[GVRM]   RGB range after sigmoid:', { min: minRGB.toFixed(4), max: maxRGB.toFixed(4) });
   }
 
   async render(): Promise<void> {
