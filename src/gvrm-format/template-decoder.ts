@@ -111,55 +111,24 @@ export class TemplateDecoder {
 
     const startTime = performance.now();
 
-    // Log expected vs actual input names for debugging
-    const expectedInputs = this.session.inputNames;
-    console.log('[TemplateDecoder] 🔍 ONNX expects inputs:', expectedInputs);
-    console.log('[TemplateDecoder] 📐 Input shapes:', {
-      projectionFeature: `[${numVertices}, 128]`,
-      baseFeature: `[${numVertices}, 128]`,
-      idEmbedding: '[768]'
-    });
+    // デバッグ: ONNXモデルが期待する入力名を表示
+    console.log('[TemplateDecoder] 🔍 ONNX expects inputs:', this.session.inputNames);
+    console.log('[TemplateDecoder] 🔍 ONNX output names:', this.session.outputNames);
 
-    // Create tensors
+    // テンソル作成
     const projTensor = new ort.Tensor('float32', projectionFeature, [numVertices, 128]);
     const baseTensor = new ort.Tensor('float32', baseFeature, [numVertices, 128]);
     const idTensor = new ort.Tensor('float32', idEmbedding, [768]);
 
-    // Build feeds dynamically based on what the model expects
-    const feeds: Record<string, ort.Tensor> = {};
-
-    for (const inputName of expectedInputs) {
-      const lowerName = inputName.toLowerCase();
-      if (lowerName.includes('projection') || lowerName.includes('proj')) {
-        feeds[inputName] = projTensor;
-        console.log(`[TemplateDecoder]   ✓ Mapped ${inputName} ← projectionFeature`);
-      } else if (lowerName.includes('base')) {
-        feeds[inputName] = baseTensor;
-        console.log(`[TemplateDecoder]   ✓ Mapped ${inputName} ← baseFeature`);
-      } else if (lowerName.includes('id') || lowerName.includes('global') || lowerName.includes('embedding')) {
-        feeds[inputName] = idTensor;
-        console.log(`[TemplateDecoder]   ✓ Mapped ${inputName} ← idEmbedding`);
-      } else {
-        console.warn(`[TemplateDecoder]   ⚠ Unknown input: ${inputName}`);
-      }
-    }
-
-    // Verify all inputs are mapped
-    if (Object.keys(feeds).length !== expectedInputs.length) {
-      console.error('[TemplateDecoder] ❌ Input mapping mismatch:', {
-        expected: expectedInputs,
-        mapped: Object.keys(feeds)
-      });
-      throw new Error(`Input mapping failed. Expected: ${expectedInputs.join(', ')}`);
-    }
-
-    const outputs = await this.session.run(feeds);
+    // 明示的な入力名（ONNXモデルの入力名に合わせて修正が必要な場合あり）
+    const outputs = await this.session.run({
+      projection_features: projTensor,
+      base_feature: baseTensor,
+      id_embedding: idTensor
+    });
 
     const elapsed = performance.now() - startTime;
     console.log(`[TemplateDecoder] ✅ Inference: ${elapsed.toFixed(2)}ms`);
-
-    // Log output names for verification
-    console.log('[TemplateDecoder] 🔍 Output keys:', Object.keys(outputs));
 
     return {
       latent32ch: outputs.latent_32ch.data as Float32Array,
