@@ -2,6 +2,7 @@
 // GUAVA pipeline implementation (WebGL GPU mode)
 // 論文準拠: Real-time UV rasterization with GPU
 
+import * as THREE from 'three';
 import { ImageEncoder } from './image-encoder';
 import { TemplateDecoder } from './template-decoder';
 import { UVDecoder } from './uv-decoder';
@@ -97,6 +98,13 @@ export class GVRM {
 
   // Neural Refiner用のidEmbedding (256ch)
   private idEmbedding256: Float32Array | null = null;
+
+  // ソースカメラ設定（render時に使用）
+  private sourceCameraConfig: {
+    position: [number, number, number];
+    target: [number, number, number];
+    fov: number;
+  } | null = null;
 
   /**
    * コンストラクタ
@@ -202,6 +210,13 @@ export class GVRM {
     console.log('[GVRM] Loading source camera config for coordinate alignment...');
     const sourceCameraConfig = await this.loadSourceCameraConfig();
     console.log('[GVRM] Source camera target:', sourceCameraConfig.target);
+
+    // Store for render() use
+    this.sourceCameraConfig = {
+      position: sourceCameraConfig.position,
+      target: sourceCameraConfig.target,
+      fov: sourceCameraConfig.fov
+    };
 
     // ========== Step 0.5: Load PLY file ==========
     // Use configurable templatePath (concierge-controller.ts互換)
@@ -709,15 +724,32 @@ export class GVRM {
 
     console.log('[GVRM] Rendering avatar...');
 
-    // Step 1: Render coarse feature map (32ch)
-    const coarseFeatureMap = this.gsViewer.render();
+    // Step 1: Create camera from source camera config
+    let camera: THREE.PerspectiveCamera | undefined;
+    if (this.sourceCameraConfig) {
+      const { position, target, fov } = this.sourceCameraConfig;
+      camera = new THREE.PerspectiveCamera(fov, 1.0, 0.1, 100);
+      camera.position.set(position[0], position[1], position[2]);
+      camera.lookAt(target[0], target[1], target[2]);
+      camera.updateMatrixWorld();
+      console.log('[GVRM]   Using source camera:', {
+        position,
+        target,
+        fov
+      });
+    } else {
+      console.warn('[GVRM]   No source camera config, using default');
+    }
+
+    // Step 2: Render coarse feature map (32ch) with proper camera
+    const coarseFeatureMap = this.gsViewer.render(512, 512, camera);
     console.log('[GVRM]   Coarse feature map rendered:', coarseFeatureMap.length);
 
-    // Step 2: Neural refinement (32ch → 3ch RGB)
+    // Step 3: Neural refinement (32ch → 3ch RGB)
     const refinedImage = await this.neuralRefiner.process(coarseFeatureMap);
     console.log('[GVRM]   Neural refinement complete:', refinedImage.length);
 
-    // Step 3: Display
+    // Step 4: Display
     this.display.display(refinedImage);
     console.log('[GVRM] ✅ Avatar rendered');
   }
