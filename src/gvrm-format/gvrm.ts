@@ -260,18 +260,26 @@ export class GVRM {
 
     // ========== Step 4: Generate Template Gaussians ==========
     console.log('[GVRM] Step 4: Generating Template Gaussians...');
-    
+
+    // View direction を計算（カメラ → ターゲット）
+    const viewDir = computeViewDirection(
+      sourceCameraConfig.position as [number, number, number],
+      sourceCameraConfig.target as [number, number, number]
+    );
+    console.log('[GVRM]   View direction:', viewDir);
+
     const templateOutput = await this.templateDecoder.generate(
       projectionFeature,
-      idEmbedding
+      idEmbedding,
+      viewDir
     );
-    
+
     this.templateGaussians = {
       positions: templateVertices,
       opacities: templateOutput.opacity,
       scales: templateOutput.scale,
       rotations: templateOutput.rotation,
-      latents: templateOutput.latent32ch
+      latents: templateOutput.rgb  // 新版: rgb (旧版: latent32ch)
     };
     
     console.log('[GVRM] ✅ Template Gaussians generated:', {
