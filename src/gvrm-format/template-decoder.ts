@@ -113,7 +113,7 @@ export class TemplateDecoder {
     const idTensor = new ort.Tensor('float32', idEmbedding, [768]);
 
     const outputs = await this.session.run({
-      projection_feature: projTensor,
+      projection_features: projTensor,  // 's' 付き（ONNXモデルの入力名に合わせる）
       base_feature: baseTensor,
       id_embedding: idTensor
     });
