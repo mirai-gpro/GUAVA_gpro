@@ -56,6 +56,10 @@ export class TemplateDecoder {
 
       console.log('[TemplateDecoder] ✅ Model loaded');
 
+      // Debug: ONNXモデルの入力/出力名を確認
+      console.log('[TemplateDecoder] 🔍 Input names:', this.session.inputNames);
+      console.log('[TemplateDecoder] 🔍 Output names:', this.session.outputNames);
+
       await this.loadGeometryData(basePath);
 
       this.initialized = true;
@@ -107,13 +111,18 @@ export class TemplateDecoder {
 
     const startTime = performance.now();
 
+    // デバッグ: ONNXモデルが期待する入力名を表示
+    console.log('[TemplateDecoder] 🔍 ONNX expects inputs:', this.session.inputNames);
+    console.log('[TemplateDecoder] 🔍 ONNX output names:', this.session.outputNames);
+
+    // テンソル作成
     const projTensor = new ort.Tensor('float32', projectionFeature, [numVertices, 128]);
     const baseTensor = new ort.Tensor('float32', baseFeature, [numVertices, 128]);
-    // 論文: DINOv2 CLS token = 768次元 (global_mappingはONNXモデル内包)
     const idTensor = new ort.Tensor('float32', idEmbedding, [768]);
 
+    // 明示的な入力名（元のtemplate_decoder_full.onnxと同じ）
     const outputs = await this.session.run({
-      projection_features: projTensor,  // 's' 付き（ONNXモデルの入力名に合わせる）
+      projection_feature: projTensor,   // 単数形（元の版と同じ）
       base_feature: baseTensor,
       id_embedding: idTensor
     });
