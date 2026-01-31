@@ -111,19 +111,55 @@ export class TemplateDecoder {
 
     const startTime = performance.now();
 
+    // Log expected vs actual input names for debugging
+    const expectedInputs = this.session.inputNames;
+    console.log('[TemplateDecoder] 🔍 ONNX expects inputs:', expectedInputs);
+    console.log('[TemplateDecoder] 📐 Input shapes:', {
+      projectionFeature: `[${numVertices}, 128]`,
+      baseFeature: `[${numVertices}, 128]`,
+      idEmbedding: '[768]'
+    });
+
+    // Create tensors
     const projTensor = new ort.Tensor('float32', projectionFeature, [numVertices, 128]);
     const baseTensor = new ort.Tensor('float32', baseFeature, [numVertices, 128]);
-    // 論文: DINOv2 CLS token = 768次元 (global_mappingはONNXモデル内包)
     const idTensor = new ort.Tensor('float32', idEmbedding, [768]);
 
-    const outputs = await this.session.run({
-      projection_features: projTensor,  // 's' 付き（ONNXモデルの入力名に合わせる）
-      base_feature: baseTensor,
-      id_embedding: idTensor
-    });
+    // Build feeds dynamically based on what the model expects
+    const feeds: Record<string, ort.Tensor> = {};
+
+    for (const inputName of expectedInputs) {
+      const lowerName = inputName.toLowerCase();
+      if (lowerName.includes('projection') || lowerName.includes('proj')) {
+        feeds[inputName] = projTensor;
+        console.log(`[TemplateDecoder]   ✓ Mapped ${inputName} ← projectionFeature`);
+      } else if (lowerName.includes('base')) {
+        feeds[inputName] = baseTensor;
+        console.log(`[TemplateDecoder]   ✓ Mapped ${inputName} ← baseFeature`);
+      } else if (lowerName.includes('id') || lowerName.includes('global') || lowerName.includes('embedding')) {
+        feeds[inputName] = idTensor;
+        console.log(`[TemplateDecoder]   ✓ Mapped ${inputName} ← idEmbedding`);
+      } else {
+        console.warn(`[TemplateDecoder]   ⚠ Unknown input: ${inputName}`);
+      }
+    }
+
+    // Verify all inputs are mapped
+    if (Object.keys(feeds).length !== expectedInputs.length) {
+      console.error('[TemplateDecoder] ❌ Input mapping mismatch:', {
+        expected: expectedInputs,
+        mapped: Object.keys(feeds)
+      });
+      throw new Error(`Input mapping failed. Expected: ${expectedInputs.join(', ')}`);
+    }
+
+    const outputs = await this.session.run(feeds);
 
     const elapsed = performance.now() - startTime;
     console.log(`[TemplateDecoder] ✅ Inference: ${elapsed.toFixed(2)}ms`);
+
+    // Log output names for verification
+    console.log('[TemplateDecoder] 🔍 Output keys:', Object.keys(outputs));
 
     return {
       latent32ch: outputs.latent_32ch.data as Float32Array,
