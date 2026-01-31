@@ -7,7 +7,7 @@ import { TemplateDecoder } from './template-decoder';
 import { UVDecoder } from './uv-decoder';
 import { WebGLUVRasterizer } from './webgl-uv-rasterizer';
 import { InverseTextureMapper } from './inverse-texture-mapping';
-import { NeuralRefiner } from './neural-refiner';
+import { RFDNRefiner } from './rfdn-refiner-webgpu';
 import { WebGLDisplay } from './webgl-display';
 import { GSViewer } from './gs';
 import { UVStyleUNet } from './uv-styleunet';
@@ -76,7 +76,7 @@ export class GVRM {
   private uvStyleUNet: UVStyleUNet | null = null;  // 論文準拠: 35ch → 96ch (null in mobile mode)
   private webglRasterizer: WebGLUVRasterizer;
   private inverseMapper: InverseTextureMapper | null = null;
-  private neuralRefiner: NeuralRefiner;
+  private neuralRefiner: RFDNRefiner;
   private display: WebGLDisplay | null = null;
   private gsViewer: GSViewer | null = null;
 
@@ -113,7 +113,10 @@ export class GVRM {
     this.uvDecoder = new UVDecoder();
     // uvStyleUNet is created conditionally in init() based on mobileMode
     this.webglRasterizer = new WebGLUVRasterizer();
-    this.neuralRefiner = new NeuralRefiner();
+    this.neuralRefiner = new RFDNRefiner({
+      modelPath: '/assets/simpleunet_trained.onnx',
+      useWebGPU: true  // WebGPU対応ブラウザで高速化
+    });
   }
 
   /**
@@ -704,11 +707,6 @@ export class GVRM {
       return;
     }
 
-    if (!this.idEmbedding256) {
-      console.warn('[GVRM] No idEmbedding256 available, skipping render');
-      return;
-    }
-
     console.log('[GVRM] Rendering avatar...');
 
     // Step 1: Render coarse feature map (32ch)
@@ -716,7 +714,7 @@ export class GVRM {
     console.log('[GVRM]   Coarse feature map rendered:', coarseFeatureMap.length);
 
     // Step 2: Neural refinement (32ch → 3ch RGB)
-    const refinedImage = await this.neuralRefiner.run(coarseFeatureMap, this.idEmbedding256);
+    const refinedImage = await this.neuralRefiner.process(coarseFeatureMap);
     console.log('[GVRM]   Neural refinement complete:', refinedImage.length);
 
     // Step 3: Display
