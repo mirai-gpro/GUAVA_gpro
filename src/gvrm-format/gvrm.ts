@@ -538,11 +538,13 @@ export class GVRM {
     });
 
     // ========== CRITICAL: Actually perform Inverse Texture Mapping ==========
-    // Project image-space features to UV-space using mesh world positions
+    // Project image-space features AND RGB to UV-space using mesh world positions
     console.log('[GVRM]   🚀 Performing Inverse Texture Mapping...');
-    console.log('[GVRM]   - Input: Image-space features (518×518×32)');
-    console.log('[GVRM]   - Output: UV-space features (1024×1024×32)');
+    console.log('[GVRM]   - Input 1: Image-space features (518×518×32)');
+    console.log('[GVRM]   - Input 2: Image-space RGB (518×518×3)');
+    console.log('[GVRM]   - Output: UV-space features (1024×1024×32) + RGB (1024×1024×3)');
 
+    // Project 32ch DINO features to UV space
     const uvSpaceFeatures1024 = this.inverseMapper.map(
       uvMapping,
       imageBranchFeatures,
@@ -559,14 +561,40 @@ export class GVRM {
       uvSum += v;
       if (v !== 0) uvNonZero++;
     }
-    console.log('[GVRM] 🔍 UV-space features (1024×1024) stats:', {
+    console.log('[GVRM] 🔍 UV-space features (1024×1024×32) stats:', {
       min: uvMin.toFixed(4),
       max: uvMax.toFixed(4),
       mean: (uvSum / uvSpaceFeatures1024.length).toFixed(4),
       nonZeroRatio: (uvNonZero / uvSpaceFeatures1024.length * 100).toFixed(1) + '%'
     });
 
-    console.log('[GVRM] ✅ Inverse Texture Mapping complete');
+    // ========== CRITICAL: Also project RGB to UV space (Python版準拠) ==========
+    console.log('[GVRM]   🎨 Projecting RGB to UV space...');
+    const sourceRGB = this.imageEncoder.getSourceImageRGBForMapping();
+    const uvSpaceRGB1024 = this.inverseMapper.map(
+      uvMapping,
+      sourceRGB.data,
+      { width: sourceRGB.width, height: sourceRGB.height },
+      3  // 3 RGB channels
+    );
+
+    // 🔍 Debug: UV-space RGB statistics
+    let rgbMin = Infinity, rgbMax = -Infinity, rgbSum = 0, rgbNonZero = 0;
+    for (let i = 0; i < uvSpaceRGB1024.length; i++) {
+      const v = uvSpaceRGB1024[i];
+      if (v < rgbMin) rgbMin = v;
+      if (v > rgbMax) rgbMax = v;
+      rgbSum += v;
+      if (v !== 0) rgbNonZero++;
+    }
+    console.log('[GVRM] 🔍 UV-space RGB (1024×1024×3) stats:', {
+      min: rgbMin.toFixed(4),
+      max: rgbMax.toFixed(4),
+      mean: (rgbSum / uvSpaceRGB1024.length).toFixed(4),
+      nonZeroRatio: (rgbNonZero / uvSpaceRGB1024.length * 100).toFixed(1) + '%'
+    });
+
+    console.log('[GVRM] ✅ Inverse Texture Mapping complete (features + RGB)');
 
     // ========== Step 10.5: Build 155ch UV features (論文準拠) ==========
     console.log('[GVRM] Step 10.5: Building 155ch UV features (論文準拠)...');
@@ -632,6 +660,56 @@ export class GVRM {
       nonZeroRatio: (resampledNonZero / uvFeatures32ch.length * 100).toFixed(1) + '%'
     });
 
+    // Step 10.5.1b: Resample UV-space RGB from 1024 to 512 (HWC→CHW format)
+    // CRITICAL: Python版では RGB も UV空間に投影してから StyleUNet に渡す
+    console.log('[GVRM]   Resampling UV-space RGB (1024→512, HWC→CHW)...');
+    const uvRGB3ch = new Float32Array(3 * uvResolution * uvResolution);
+
+    for (let c = 0; c < 3; c++) {
+      for (let ty = 0; ty < uvResolution; ty++) {
+        for (let tx = 0; tx < uvResolution; tx++) {
+          const sx = tx * scale;
+          const sy = ty * scale;
+          const sx0 = Math.floor(sx);
+          const sy0 = Math.floor(sy);
+          const sx1 = Math.min(sx0 + 1, uvMappingRes - 1);
+          const sy1 = Math.min(sy0 + 1, uvMappingRes - 1);
+          const wx = sx - sx0;
+          const wy = sy - sy0;
+
+          // Source is HWC format: [H, W, 3] from InverseTextureMapper
+          const v00 = uvSpaceRGB1024[(sy0 * uvMappingRes + sx0) * 3 + c];
+          const v10 = uvSpaceRGB1024[(sy0 * uvMappingRes + sx1) * 3 + c];
+          const v01 = uvSpaceRGB1024[(sy1 * uvMappingRes + sx0) * 3 + c];
+          const v11 = uvSpaceRGB1024[(sy1 * uvMappingRes + sx1) * 3 + c];
+
+          const top = v00 * (1 - wx) + v10 * wx;
+          const bottom = v01 * (1 - wx) + v11 * wx;
+          const value = top * (1 - wy) + bottom * wy;
+
+          // Output is CHW format: [3, H, W] for StyleUNet
+          uvRGB3ch[c * uvResolution * uvResolution + ty * uvResolution + tx] = value;
+        }
+      }
+    }
+
+    // 🔍 Debug: Resampled UV RGB statistics
+    let rgbResMin = Infinity, rgbResMax = -Infinity, rgbResSum = 0, rgbResNonZero = 0;
+    for (let i = 0; i < uvRGB3ch.length; i++) {
+      const v = uvRGB3ch[i];
+      if (v < rgbResMin) rgbResMin = v;
+      if (v > rgbResMax) rgbResMax = v;
+      rgbResSum += v;
+      if (v !== 0) rgbResNonZero++;
+    }
+    console.log('[GVRM]   🔍 UV RGB 3ch (512×512) stats:', {
+      min: rgbResMin.toFixed(4),
+      max: rgbResMax.toFixed(4),
+      mean: (rgbResSum / uvRGB3ch.length).toFixed(4),
+      nonZeroRatio: (rgbResNonZero / uvRGB3ch.length * 100).toFixed(1) + '%'
+    });
+    console.log('[GVRM]   ✅ UV-space RGB prepared (1024→512, CHW format)');
+
     // View direction (already computed at Step 4)
     console.log('[GVRM]   View direction (reusing from Step 4):', viewDir);
 
@@ -644,9 +722,10 @@ export class GVRM {
 
     console.log('[GVRM]   Using StyleUNet pipeline (3.69MB lightweight)');
 
-    // Step 10.5.2: Prepare 3ch RGB (from source image, resample to 512x512)
-    console.log('[GVRM]   Preparing 3ch RGB from source image...');
-    const rgbImage = this.imageEncoder.getSourceImageRGB(uvResolution, uvResolution);
+    // Step 10.5.2: Use UV-space RGB (NOT image-space RGB!)
+    // CRITICAL FIX: Python版では RGB も UV空間に投影してから使用
+    console.log('[GVRM]   Using UV-space RGB (projected from image)...');
+    const rgbImage = uvRGB3ch;  // Use UV-space RGB instead of image-space RGB
     console.log('[GVRM]   ✅ 3ch RGB prepared');
 
     // Step 10.5.3: Get global feature for style embedding
