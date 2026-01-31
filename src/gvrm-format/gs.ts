@@ -138,6 +138,9 @@ export class GSViewer {
     this.logAttributeStats('opacity', this.opacityData, 1);
     this.logAttributeStats('scale', this.scaleData, 3);
 
+    // Latent features statistics (32 channels)
+    this.logLatentStats();
+
     this.geometry = new THREE.BufferGeometry();
     this.geometry.setAttribute('position', new THREE.BufferAttribute(data.positions, 3));
     this.geometry.setAttribute('boneIndices', new THREE.BufferAttribute(data.boneIndices, 4));
@@ -191,6 +194,52 @@ export class GSViewer {
       max: max.toFixed(4),
       mean: mean.toFixed(4),
       nanCount
+    });
+  }
+
+  private logLatentStats(): void {
+    if (!this.latentData || this.latentData.length === 0) {
+      console.log('[GSViewer] latents: empty');
+      return;
+    }
+
+    // Per-channel statistics
+    const channelStats: { ch: number; min: number; max: number; mean: number }[] = [];
+
+    for (let c = 0; c < 32; c++) {
+      let min = Infinity, max = -Infinity, sum = 0;
+      for (let i = 0; i < this.vertexCount; i++) {
+        const v = this.latentData[i * 32 + c];
+        if (isNaN(v)) continue;
+        if (v < min) min = v;
+        if (v > max) max = v;
+        sum += v;
+      }
+      const mean = sum / this.vertexCount;
+      channelStats.push({ ch: c, min, max, mean });
+    }
+
+    // Log first 3 channels (RGB) separately
+    console.log('[GSViewer] Latent RGB channels (ch0-2, should be sigmoid activated):');
+    for (let c = 0; c < 3; c++) {
+      const s = channelStats[c];
+      console.log(`  Ch${c} (${['R', 'G', 'B'][c]}): [${s.min.toFixed(4)}, ${s.max.toFixed(4)}], mean=${s.mean.toFixed(4)}`);
+    }
+
+    // Overall latent stats
+    let overallMin = Infinity, overallMax = -Infinity, overallSum = 0;
+    for (const s of channelStats) {
+      if (s.min < overallMin) overallMin = s.min;
+      if (s.max > overallMax) overallMax = s.max;
+      overallSum += s.mean;
+    }
+
+    console.log('[GSViewer] Latent overall:', {
+      channels: 32,
+      vertices: this.vertexCount,
+      minAcrossAll: overallMin.toFixed(4),
+      maxAcrossAll: overallMax.toFixed(4),
+      avgChannelMean: (overallSum / 32).toFixed(4)
     });
   }
 
@@ -496,6 +545,47 @@ export class GSViewer {
       camera.projectionMatrix,
       camera.matrixWorldInverse
     );
+  }
+
+  /**
+   * Debug: Extract RGB channels from coarse feature map
+   * 論文準拠: 最初の3チャンネルはRGB (sigmoid適用済み)
+   */
+  public extractRGBFromCoarseFeatures(featureMap: Float32Array, width: number, height: number): Float32Array {
+    const rgb = new Float32Array(height * width * 3);
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const pixelIdx = y * width + x;
+        const dstIdx = pixelIdx * 3;
+
+        // CHW形式から取得: featureMap[c * H * W + y * W + x]
+        rgb[dstIdx + 0] = featureMap[0 * height * width + pixelIdx];  // R
+        rgb[dstIdx + 1] = featureMap[1 * height * width + pixelIdx];  // G
+        rgb[dstIdx + 2] = featureMap[2 * height * width + pixelIdx];  // B
+      }
+    }
+
+    // Clamp to [0, 1]
+    for (let i = 0; i < rgb.length; i++) {
+      rgb[i] = Math.max(0, Math.min(1, rgb[i]));
+    }
+
+    // Stats
+    let rSum = 0, gSum = 0, bSum = 0;
+    for (let i = 0; i < height * width; i++) {
+      rSum += rgb[i * 3 + 0];
+      gSum += rgb[i * 3 + 1];
+      bSum += rgb[i * 3 + 2];
+    }
+    const pixelCount = height * width;
+    console.log('[GSViewer] RGB channel means from coarse features:', {
+      R: (rSum / pixelCount).toFixed(4),
+      G: (gSum / pixelCount).toFixed(4),
+      B: (bSum / pixelCount).toFixed(4)
+    });
+
+    return rgb;
   }
 
   public dispose() {

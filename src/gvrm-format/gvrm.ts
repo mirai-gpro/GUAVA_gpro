@@ -313,8 +313,36 @@ export class GVRM {
       viewDir
     );
 
+    // ========== CRITICAL FIX: Apply offset to template Gaussian positions ==========
+    // Python版準拠: positions = v_template + offset
+    let templatePositions: Float32Array;
+    if (templateOutput.offset && templateOutput.offset.length === templateVertexCount * 3) {
+      console.log('[GVRM]   Applying Template Decoder offset to positions...');
+      templatePositions = new Float32Array(templateVertexCount * 3);
+      for (let i = 0; i < templateVertexCount * 3; i++) {
+        templatePositions[i] = templateVertices[i] + templateOutput.offset[i];
+      }
+
+      // Debug: offset statistics
+      let offsetMin = Infinity, offsetMax = -Infinity, offsetSum = 0;
+      for (let i = 0; i < templateOutput.offset.length; i++) {
+        const v = templateOutput.offset[i];
+        if (v < offsetMin) offsetMin = v;
+        if (v > offsetMax) offsetMax = v;
+        offsetSum += Math.abs(v);
+      }
+      console.log('[GVRM]   Offset stats:', {
+        min: offsetMin.toFixed(4),
+        max: offsetMax.toFixed(4),
+        avgMagnitude: (offsetSum / templateOutput.offset.length).toFixed(4)
+      });
+    } else {
+      console.warn('[GVRM]   ⚠️ No offset from Template Decoder, using raw vertices');
+      templatePositions = templateVertices;
+    }
+
     this.templateGaussians = {
-      positions: templateVertices,
+      positions: templatePositions,  // Now with offset applied
       opacities: templateOutput.opacity,
       scales: templateOutput.scale,
       rotations: templateOutput.rotation,
@@ -1005,7 +1033,7 @@ export class GVRM {
     console.log('[GVRM]   RGB range after sigmoid:', { min: minRGB.toFixed(4), max: maxRGB.toFixed(4) });
   }
 
-  async render(): Promise<void> {
+  async render(debugMode: 'normal' | 'coarse_rgb' = 'normal'): Promise<void> {
     if (!this.initialized || !this.gsViewer) {
       throw new Error('[GVRM] Not initialized');
     }
@@ -1015,7 +1043,7 @@ export class GVRM {
       return;
     }
 
-    console.log('[GVRM] Rendering avatar...');
+    console.log('[GVRM] Rendering avatar... (mode:', debugMode, ')');
 
     // Step 1: Create camera from source camera config
     let camera: THREE.PerspectiveCamera | undefined;
@@ -1038,12 +1066,21 @@ export class GVRM {
     const coarseFeatureMap = this.gsViewer.render(512, 512, camera);
     console.log('[GVRM]   Coarse feature map rendered:', coarseFeatureMap.length);
 
-    // Step 3: Neural refinement (32ch → 3ch RGB)
-    const refinedImage = await this.neuralRefiner.process(coarseFeatureMap);
-    console.log('[GVRM]   Neural refinement complete:', refinedImage.length);
+    let outputImage: Float32Array;
+
+    if (debugMode === 'coarse_rgb') {
+      // Debug mode: Display RGB from coarse features directly (bypass Neural Refiner)
+      console.log('[GVRM]   🔍 Debug: Extracting RGB from coarse features (bypassing Neural Refiner)...');
+      outputImage = this.gsViewer.extractRGBFromCoarseFeatures(coarseFeatureMap, 512, 512);
+      console.log('[GVRM]   🔍 Debug: Direct RGB extraction complete');
+    } else {
+      // Normal mode: Neural refinement (32ch → 3ch RGB)
+      outputImage = await this.neuralRefiner.process(coarseFeatureMap);
+      console.log('[GVRM]   Neural refinement complete:', outputImage.length);
+    }
 
     // Step 4: Display
-    this.display.display(refinedImage);
+    this.display.display(outputImage);
     console.log('[GVRM] ✅ Avatar rendered');
   }
 
