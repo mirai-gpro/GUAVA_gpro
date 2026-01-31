@@ -33,7 +33,8 @@ export class ConciergeController extends CoreController {
         
         const config = {
           templatePath: '/assets/avatar_web.ply',
-          imagePath: '/assets/source.png'
+          imagePath: '/assets/source.png',
+          container: this.els.avatarContainer
         };
         
         await this.guavaRenderer.init(config);

@@ -95,6 +95,9 @@ export class GVRM {
   // Lip-sync state
   private currentLipSyncLevel: number = 0;
 
+  // Neural Refiner用のidEmbedding (256ch)
+  private idEmbedding256: Float32Array | null = null;
+
   /**
    * コンストラクタ
    * @param displayContainer 表示コンテナ（オプション、init()のconfigでも指定可能）
@@ -167,6 +170,12 @@ export class GVRM {
 
       this.initialized = true;
       console.log('[GVRM] ✅ Initialization successful');
+
+      // Initial render to display avatar
+      if (this.display) {
+        console.log('[GVRM] Performing initial render...');
+        await this.render();
+      }
 
     } catch (error) {
       console.error('[GVRM] ❌ Initialization failed:', error);
@@ -281,6 +290,12 @@ export class GVRM {
       rotations: templateOutput.rotation,
       latents: templateOutput.rgb  // 新版: rgb (旧版: latent32ch)
     };
+
+    // Store idEmbedding256 for Neural Refiner
+    if (templateOutput.idEmbedding256) {
+      this.idEmbedding256 = templateOutput.idEmbedding256;
+      console.log('[GVRM]   idEmbedding256 stored:', this.idEmbedding256.length, 'elements');
+    }
     
     console.log('[GVRM] ✅ Template Gaussians generated:', {
       vertices: templateVertexCount.toLocaleString(),
@@ -670,24 +685,34 @@ export class GVRM {
     return result;
   }
 
-  async render(targetImageUrl: string): Promise<ImageData | null> {
+  async render(): Promise<void> {
     if (!this.initialized || !this.gsViewer) {
       throw new Error('[GVRM] Not initialized');
     }
 
     if (!this.display) {
       console.warn('[GVRM] No display available, skipping render');
-      return null;
+      return;
     }
 
-    // Step 1: Render coarse feature map
-    const coarseFeatureMap = this.gsViewer.render();
+    if (!this.idEmbedding256) {
+      console.warn('[GVRM] No idEmbedding256 available, skipping render');
+      return;
+    }
 
-    // Step 2: Neural refinement
-    const refinedImage = await this.neuralRefiner.refine(coarseFeatureMap);
+    console.log('[GVRM] Rendering avatar...');
+
+    // Step 1: Render coarse feature map (32ch)
+    const coarseFeatureMap = this.gsViewer.render();
+    console.log('[GVRM]   Coarse feature map rendered:', coarseFeatureMap.length);
+
+    // Step 2: Neural refinement (32ch → 3ch RGB)
+    const refinedImage = await this.neuralRefiner.run(coarseFeatureMap, this.idEmbedding256);
+    console.log('[GVRM]   Neural refinement complete:', refinedImage.length);
 
     // Step 3: Display
-    return this.display.display(refinedImage);
+    this.display.display(refinedImage);
+    console.log('[GVRM] ✅ Avatar rendered');
   }
 
   /**
