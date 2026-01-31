@@ -8,6 +8,97 @@
 
 import * as ort from 'onnxruntime-web/wasm';
 
+/**
+ * Float32 を Float16 (IEEE 754 half-precision) に変換
+ */
+function float32ToFloat16(float32Array: Float32Array): Uint16Array {
+  const float16Array = new Uint16Array(float32Array.length);
+  for (let i = 0; i < float32Array.length; i++) {
+    float16Array[i] = floatToHalf(float32Array[i]);
+  }
+  return float16Array;
+}
+
+/**
+ * Float16 (Uint16Array) を Float32Array に変換
+ */
+function float16ToFloat32(float16Array: Uint16Array): Float32Array {
+  const float32Array = new Float32Array(float16Array.length);
+  for (let i = 0; i < float16Array.length; i++) {
+    float32Array[i] = halfToFloat(float16Array[i]);
+  }
+  return float32Array;
+}
+
+/**
+ * 単一の float16 ビットパターンを float32 に変換
+ */
+function halfToFloat(h: number): number {
+  const sign = (h & 0x8000) >> 15;
+  const exponent = (h & 0x7c00) >> 10;
+  const mantissa = h & 0x03ff;
+
+  if (exponent === 0) {
+    if (mantissa === 0) {
+      // Zero
+      return sign ? -0 : 0;
+    }
+    // Denormalized number
+    let e = -14;
+    let m = mantissa;
+    while ((m & 0x400) === 0) {
+      m <<= 1;
+      e--;
+    }
+    m &= 0x3ff;
+    return (sign ? -1 : 1) * Math.pow(2, e) * (1 + m / 1024);
+  } else if (exponent === 31) {
+    // Infinity or NaN
+    if (mantissa === 0) {
+      return sign ? -Infinity : Infinity;
+    }
+    return NaN;
+  }
+
+  // Normalized number
+  return (sign ? -1 : 1) * Math.pow(2, exponent - 15) * (1 + mantissa / 1024);
+}
+
+/**
+ * 単一の float32 を float16 ビットパターンに変換
+ */
+function floatToHalf(value: number): number {
+  const floatView = new Float32Array(1);
+  const int32View = new Int32Array(floatView.buffer);
+
+  floatView[0] = value;
+  const f = int32View[0];
+
+  const sign = (f >> 16) & 0x8000;
+  let exponent = ((f >> 23) & 0xff) - 127 + 15;
+  let mantissa = (f >> 13) & 0x3ff;
+
+  if (exponent <= 0) {
+    // Denormalized number or zero
+    if (exponent < -10) {
+      return sign; // Zero
+    }
+    mantissa = (mantissa | 0x400) >> (1 - exponent);
+    return sign | mantissa;
+  } else if (exponent === 0xff - 127 + 15) {
+    // Infinity or NaN
+    if (mantissa) {
+      return sign | 0x7c00 | mantissa; // NaN
+    }
+    return sign | 0x7c00; // Infinity
+  } else if (exponent > 30) {
+    // Overflow - return infinity
+    return sign | 0x7c00;
+  }
+
+  return sign | (exponent << 10) | mantissa;
+}
+
 export interface UVStyleUNetOptions {
   /** アセットのベースパス */
   basePath?: string;
@@ -149,21 +240,35 @@ export class UVStyleUNet {
     console.log('[UVStyleUNet]   Input 35ch prepared');
 
     // 3. Run StyleUNet: 35ch → 96ch
-    const inputTensor = new ort.Tensor('float32', input35ch, [1, 35, uvHeight, uvWidth]);
-    const styleTensor = new ort.Tensor('float32', extraStyle, [1, 512]);
+    // FP16モデル用にfloat16テンソルを作成
+    const input35chFp16 = float32ToFloat16(input35ch);
+    const extraStyleFp16 = float32ToFloat16(extraStyle);
+
+    const inputTensor = new ort.Tensor('float16', input35chFp16, [1, 35, uvHeight, uvWidth]);
+    const styleTensor = new ort.Tensor('float16', extraStyleFp16, [1, 512]);
 
     const feeds = {
       'uv_features': inputTensor,
       'extra_style': styleTensor
     };
 
-    console.log('[UVStyleUNet]   Running StyleUNet inference...');
+    console.log('[UVStyleUNet]   Running StyleUNet inference (FP16)...');
     const startTime = performance.now();
     const outputs = await this.session.run(feeds);
     const inferenceTime = performance.now() - startTime;
     console.log('[UVStyleUNet]   ✅ Inference complete:', inferenceTime.toFixed(1), 'ms');
 
-    const output96ch = new Float32Array(outputs['output'].data as Float32Array);
+    // 出力がfloat16の場合はfloat32に変換
+    const outputTensor = outputs['output'];
+    let output96ch: Float32Array;
+
+    if (outputTensor.type === 'float16') {
+      console.log('[UVStyleUNet]   Converting output FP16 → FP32...');
+      output96ch = float16ToFloat32(outputTensor.data as Uint16Array);
+    } else {
+      output96ch = new Float32Array(outputTensor.data as Float32Array);
+    }
+
     console.log('[UVStyleUNet]   Output 96ch:', output96ch.length, '(expected:', 96 * uvHeight * uvWidth, ')');
 
     return output96ch;
