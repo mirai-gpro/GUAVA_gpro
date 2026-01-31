@@ -123,7 +123,7 @@ export class TemplateDecoder {
     // テンソル作成（新版 template_decoder.onnx のインターフェース）
     // バッチ次元を追加: [N, C] → [1, N, C]
     const projTensor = new ort.Tensor('float32', projectionFeature, [1, numVertices, 128]);
-    const globalTensor = new ort.Tensor('float32', globalEmbedding, [1, 256]);
+    const globalTensor = new ort.Tensor('float32', globalEmbedding, [1, 768]);
     const baseTensor = new ort.Tensor('float32', baseFeature, [1, numVertices, 128]);
     const viewTensor = new ort.Tensor('float32', viewDirs, [1, 27]);
 

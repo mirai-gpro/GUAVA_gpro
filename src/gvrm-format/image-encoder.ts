@@ -312,8 +312,8 @@ export class ImageEncoder {
         camera
       );
 
-      // 10. ID Embedding生成
-      const idEmbedding = this.createIdEmbedding(clsData, patchDim, 256);
+      // 10. ID Embedding生成（768次元 = DINOv2 CLS token dimension）
+      const idEmbedding = this.createIdEmbedding(clsData, patchDim, 768);
 
       // 11. 特徴量の正規化
       this.normalizeFeatures(projectionFeature, vertexCount, featureDim);
