@@ -42,6 +42,8 @@ export class NeuralRefiner {
 
       this.initialized = true;
       console.log('[NeuralRefiner] ✅ Model loaded successfully');
+      console.log('[NeuralRefiner] 🔍 Input names:', this.session.inputNames);
+      console.log('[NeuralRefiner] 🔍 Output names:', this.session.outputNames);
     } catch (error) {
       console.error('[NeuralRefiner] ❌ Failed to load model:', error);
       console.error('[NeuralRefiner] Error details:', {
@@ -62,8 +64,16 @@ export class NeuralRefiner {
       throw new Error('NeuralRefiner not initialized');
     }
 
+    console.log('[NeuralRefiner] run() called');
+
     // 入力サイズ検証
     const expectedFMSize = this.FM_CHANNELS * this.FM_SIZE * this.FM_SIZE;
+
+    console.log('[NeuralRefiner] Input validation:', {
+      coarseFM: coarseFM.length,
+      expectedFM: expectedFMSize,
+      idEmb: idEmb.length
+    });
 
     if (coarseFM.length !== expectedFMSize) {
       throw new Error(
@@ -77,9 +87,13 @@ export class NeuralRefiner {
       );
     }
 
+    console.log('[NeuralRefiner] Creating tensors...');
+
     // Tensor作成（512×512 モデル用）
     const fmTensor = new ort.Tensor('float32', coarseFM, [1, 32, this.FM_SIZE, this.FM_SIZE]);
     const idTensor = new ort.Tensor('float32', idEmb, [1, 256]);
+
+    console.log('[NeuralRefiner] Tensors created, running inference (WASM)...');
 
     // 推論実行
     try {
