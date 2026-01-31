@@ -323,6 +323,10 @@ export class GSViewer {
     }
     console.log('[GSViewer]   Depth range:', depthStats.min.toFixed(3), 'to', depthStats.max.toFixed(3));
 
+    // Screen coordinate tracking
+    const screenStats = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+    const ndcStats = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+
     // Transmittance buffer (per pixel)
     const transmittance = new Float32Array(height * width).fill(1.0);
 
@@ -353,9 +357,21 @@ export class GSViewer {
       const ndcX = tempVec.x / tempVec.w;
       const ndcY = tempVec.y / tempVec.w;
 
+      // Track NDC stats
+      if (ndcX < ndcStats.minX) ndcStats.minX = ndcX;
+      if (ndcX > ndcStats.maxX) ndcStats.maxX = ndcX;
+      if (ndcY < ndcStats.minY) ndcStats.minY = ndcY;
+      if (ndcY > ndcStats.maxY) ndcStats.maxY = ndcY;
+
       // NDC to pixel coordinates
       const px = Math.floor((ndcX * 0.5 + 0.5) * width);
       const py = Math.floor((1.0 - (ndcY * 0.5 + 0.5)) * height);  // Y-flip
+
+      // Track screen stats
+      if (px < screenStats.minX) screenStats.minX = px;
+      if (px > screenStats.maxX) screenStats.maxX = px;
+      if (py < screenStats.minY) screenStats.minY = py;
+      if (py > screenStats.maxY) screenStats.maxY = py;
 
       // Track out of bounds
       if (px < 0 || px >= width || py < 0 || py >= height) {
@@ -435,6 +451,17 @@ export class GSViewer {
       fmSum += v;
       if (v !== 0) fmNonZero++;
     }
+
+    console.log('[GSViewer]   NDC range:', {
+      x: `[${ndcStats.minX.toFixed(3)}, ${ndcStats.maxX.toFixed(3)}]`,
+      y: `[${ndcStats.minY.toFixed(3)}, ${ndcStats.maxY.toFixed(3)}]`
+    });
+    console.log('[GSViewer]   Screen range:', {
+      x: `[${screenStats.minX}, ${screenStats.maxX}]`,
+      y: `[${screenStats.minY}, ${screenStats.maxY}]`,
+      coverageX: ((screenStats.maxX - screenStats.minX) / width * 100).toFixed(1) + '%',
+      coverageY: ((screenStats.maxY - screenStats.minY) / height * 100).toFixed(1) + '%'
+    });
 
     console.log('[GSViewer] ✅ Coarse feature map rendered:', {
       resolution: `${width}×${height}`,
