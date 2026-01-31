@@ -13,6 +13,7 @@ import { WebGLDisplay } from './webgl-display';
 import { GSViewer } from './gs';
 import { UVStyleUNet } from './uv-styleunet';
 import { computeViewDirection, concatenateWithViewEncoding } from './view-encoding';
+import { GaussianRasterizerWebGPU, GaussianRasterInput, CameraParams as RasterizerCameraParams } from './gaussian-rasterizer-webgpu';
 
 interface PLYData {
   vertices: Float32Array;
@@ -80,6 +81,7 @@ export class GVRM {
   private neuralRefiner: RFDNRefiner;
   private display: WebGLDisplay | null = null;
   private gsViewer: GSViewer | null = null;
+  private gaussianRasterizer: GaussianRasterizerWebGPU | null = null;  // EWA Splatting rasterizer
 
   private plyData: PLYData | null = null;
   private templateMesh: EHMMesh | null = null;
@@ -108,6 +110,16 @@ export class GVRM {
 
   // UV Mapping（ワールド座標を含む）
   private uvMappingWorldPositions: Float32Array | null = null;
+
+  // Ubody Gaussians data for rendering
+  private ubodyGaussiansData: {
+    positions: Float32Array;
+    scales: Float32Array;
+    rotations: Float32Array;
+    opacities: Float32Array;
+    latents: Float32Array;
+    count: number;
+  } | null = null;
 
   /**
    * コンストラクタ
@@ -194,10 +206,10 @@ export class GVRM {
       this.initialized = true;
       console.log('[GVRM] ✅ Initialization successful');
 
-      // Initial render to display avatar
+      // Initial render to display avatar using EWA Splatting
       if (this.display) {
-        console.log('[GVRM] Performing initial render...');
-        await this.render();
+        console.log('[GVRM] Performing initial render with EWA Splatting...');
+        await this.render('ewa_splatting');
       }
 
     } catch (error) {
@@ -858,6 +870,23 @@ export class GVRM {
       latentChannels: 32
     });
 
+    // ========== Step 12.6: Store Ubody Gaussians for EWA Splatting ==========
+    console.log('[GVRM] Step 12.6: Storing Ubody Gaussians for EWA Splatting...');
+    this.ubodyGaussiansData = {
+      positions: ubodyGaussians.positions,
+      scales: ubodyGaussians.scales,
+      rotations: ubodyGaussians.rotations,
+      opacities: ubodyGaussians.opacities,
+      latents: ubodyGaussians.latents,
+      count: totalCount
+    };
+
+    // Initialize EWA Splatting rasterizer
+    console.log('[GVRM]   Initializing EWA Splatting rasterizer...');
+    this.gaussianRasterizer = new GaussianRasterizerWebGPU();
+    await this.gaussianRasterizer.init();
+    console.log('[GVRM] ✅ EWA Splatting rasterizer initialized');
+
     // ========== Final step: Pipeline complete ==========
     console.log('[GVRM] ✅ GUAVA Pipeline Complete! 🎉');
     console.log('[GVRM] 📊 Summary:', {
@@ -1075,7 +1104,7 @@ export class GVRM {
     console.log('[GVRM]   RGB range after sigmoid:', { min: minRGB.toFixed(4), max: maxRGB.toFixed(4) });
   }
 
-  async render(debugMode: 'normal' | 'coarse_rgb' = 'normal'): Promise<void> {
+  async render(debugMode: 'normal' | 'coarse_rgb' | 'ewa_splatting' = 'normal'): Promise<void> {
     if (!this.initialized || !this.gsViewer) {
       throw new Error('[GVRM] Not initialized');
     }
@@ -1087,33 +1116,86 @@ export class GVRM {
 
     console.log('[GVRM] Rendering avatar... (mode:', debugMode, ')');
 
+    const renderWidth = 512;
+    const renderHeight = 512;
+
     // Step 1: Create camera from source camera config
     let camera: THREE.PerspectiveCamera | undefined;
+    let cameraParams: RasterizerCameraParams | undefined;
+
     if (this.sourceCameraConfig) {
       const { position, target, fov } = this.sourceCameraConfig;
       camera = new THREE.PerspectiveCamera(fov, 1.0, 0.1, 100);
       camera.position.set(position[0], position[1], position[2]);
       camera.lookAt(target[0], target[1], target[2]);
       camera.updateMatrixWorld();
+
+      // Create camera params for EWA rasterizer
+      const viewMatrix = new Float32Array(16);
+      const projMatrix = new Float32Array(16);
+      camera.matrixWorldInverse.toArray(viewMatrix);
+      camera.projectionMatrix.toArray(projMatrix);
+
+      // Calculate focal lengths from FOV
+      const fovRad = (fov * Math.PI) / 180;
+      const tanFovY = Math.tan(fovRad / 2);
+      const tanFovX = tanFovY * (renderWidth / renderHeight);
+      const focalY = renderHeight / (2 * tanFovY);
+      const focalX = renderWidth / (2 * tanFovX);
+
+      cameraParams = {
+        viewMatrix,
+        projMatrix,
+        focalX,
+        focalY,
+        tanFovX,
+        tanFovY,
+        width: renderWidth,
+        height: renderHeight
+      };
+
       console.log('[GVRM]   Using source camera:', {
         position,
         target,
-        fov
+        fov,
+        focalX: focalX.toFixed(2),
+        focalY: focalY.toFixed(2)
       });
     } else {
       console.warn('[GVRM]   No source camera config, using default');
     }
 
+    let coarseFeatureMap: Float32Array;
+
     // Step 2: Render coarse feature map (32ch) with proper camera
-    const coarseFeatureMap = this.gsViewer.render(512, 512, camera);
-    console.log('[GVRM]   Coarse feature map rendered:', coarseFeatureMap.length);
+    if (debugMode === 'ewa_splatting' && this.gaussianRasterizer && this.ubodyGaussiansData && cameraParams) {
+      // Use EWA Splatting algorithm (proper 3D Gaussian projection)
+      console.log('[GVRM]   🌟 Using EWA Splatting (anisotropic Gaussian projection)...');
+
+      const rasterInput: GaussianRasterInput = {
+        positions: this.ubodyGaussiansData.positions,
+        scales: this.ubodyGaussiansData.scales,
+        rotations: this.ubodyGaussiansData.rotations,
+        opacities: this.ubodyGaussiansData.opacities,
+        features: this.ubodyGaussiansData.latents,
+        count: this.ubodyGaussiansData.count
+      };
+
+      coarseFeatureMap = await this.gaussianRasterizer.render(rasterInput, cameraParams, 0);
+      console.log('[GVRM]   ✅ EWA Splatting complete:', coarseFeatureMap.length);
+    } else {
+      // Fallback to old GSViewer (simple point splatting)
+      console.log('[GVRM]   Using GSViewer (simple point splatting)...');
+      coarseFeatureMap = this.gsViewer.render(renderWidth, renderHeight, camera);
+      console.log('[GVRM]   Coarse feature map rendered:', coarseFeatureMap.length);
+    }
 
     let outputImage: Float32Array;
 
     if (debugMode === 'coarse_rgb') {
       // Debug mode: Display RGB from coarse features directly (bypass Neural Refiner)
       console.log('[GVRM]   🔍 Debug: Extracting RGB from coarse features (bypassing Neural Refiner)...');
-      outputImage = this.gsViewer.extractRGBFromCoarseFeatures(coarseFeatureMap, 512, 512);
+      outputImage = this.gsViewer.extractRGBFromCoarseFeatures(coarseFeatureMap, renderWidth, renderHeight);
       console.log('[GVRM]   🔍 Debug: Direct RGB extraction complete');
     } else {
       // Normal mode: Neural refinement (32ch → 3ch RGB)
@@ -1425,7 +1507,8 @@ export class GVRM {
     if (this.neuralRefiner) this.neuralRefiner.dispose();
     if (this.display) this.display.dispose();
     if (this.gsViewer) this.gsViewer.dispose();
-    
+    if (this.gaussianRasterizer) this.gaussianRasterizer.dispose();
+
     this.initialized = false;
     console.log('[GVRM] Disposed');
   }
