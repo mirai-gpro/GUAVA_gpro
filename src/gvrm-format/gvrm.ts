@@ -503,38 +503,70 @@ export class GVRM {
 
     console.log('[GVRM] ✅ InverseTextureMapper initialized');
 
-    // ========== Step 10: Inverse Texture Mapping ==========
+    // ========== Step 10: Inverse Texture Mapping (実際の投影) ==========
     console.log('[GVRM] Step 10: Inverse Texture Mapping (論文準拠)...');
-    
-    // Get UV branch features (32ch) from image encoder
-    const uvBranchFeatures = this.imageEncoder.getUVFeatures();
-    
+    console.log('[GVRM]   📖 Paper: Project image-space features to UV-space');
+
+    // Get UV branch features (32ch) from image encoder - these are in IMAGE space
+    const imageBranchFeatures = this.imageEncoder.getUVFeatures();
+
     // Verify feature dimensions
-    const expectedSize = 518 * 518 * 32;
-    console.log('[GVRM] Debug - UV branch features (論文準拠):', {
-      length: uvBranchFeatures.length,
+    const imageFeatureSize = 518;
+    const expectedSize = imageFeatureSize * imageFeatureSize * 32;
+    console.log('[GVRM] Debug - Image branch features:', {
+      length: imageBranchFeatures.length,
       expected: expectedSize,
       channels: 32,
-      match: uvBranchFeatures.length === expectedSize ? '✅' : '❌'
-    });
-    
-    // 🔍 Debug: Raw UV features statistics
-    let rawMin = Infinity, rawMax = -Infinity, rawSum = 0, rawNonZero = 0;
-    for (let i = 0; i < uvBranchFeatures.length; i++) {
-      const v = uvBranchFeatures[i];
-      if (v < rawMin) rawMin = v;
-      if (v > rawMax) rawMax = v;
-      rawSum += v;
-      if (v !== 0) rawNonZero++;
-    }
-    console.log('[GVRM] 🔍 Raw UV branch features stats:', {
-      min: rawMin.toFixed(4),
-      max: rawMax.toFixed(4),
-      mean: (rawSum / uvBranchFeatures.length).toFixed(4),
-      nonZeroRatio: (rawNonZero / uvBranchFeatures.length * 100).toFixed(1) + '%'
+      format: 'HWC [518, 518, 32]',
+      match: imageBranchFeatures.length === expectedSize ? '✅' : '❌'
     });
 
-    console.log('[GVRM] ✅ Inverse Texture Mapping preparation complete');
+    // 🔍 Debug: Image features statistics
+    let imgMin = Infinity, imgMax = -Infinity, imgSum = 0, imgNonZero = 0;
+    for (let i = 0; i < imageBranchFeatures.length; i++) {
+      const v = imageBranchFeatures[i];
+      if (v < imgMin) imgMin = v;
+      if (v > imgMax) imgMax = v;
+      imgSum += v;
+      if (v !== 0) imgNonZero++;
+    }
+    console.log('[GVRM] 🔍 Image branch features stats:', {
+      min: imgMin.toFixed(4),
+      max: imgMax.toFixed(4),
+      mean: (imgSum / imageBranchFeatures.length).toFixed(4),
+      nonZeroRatio: (imgNonZero / imageBranchFeatures.length * 100).toFixed(1) + '%'
+    });
+
+    // ========== CRITICAL: Actually perform Inverse Texture Mapping ==========
+    // Project image-space features to UV-space using mesh world positions
+    console.log('[GVRM]   🚀 Performing Inverse Texture Mapping...');
+    console.log('[GVRM]   - Input: Image-space features (518×518×32)');
+    console.log('[GVRM]   - Output: UV-space features (1024×1024×32)');
+
+    const uvSpaceFeatures1024 = this.inverseMapper.map(
+      uvMapping,
+      imageBranchFeatures,
+      { width: imageFeatureSize, height: imageFeatureSize },
+      32  // 32 channels
+    );
+
+    // 🔍 Debug: UV-space features statistics
+    let uvMin = Infinity, uvMax = -Infinity, uvSum = 0, uvNonZero = 0;
+    for (let i = 0; i < uvSpaceFeatures1024.length; i++) {
+      const v = uvSpaceFeatures1024[i];
+      if (v < uvMin) uvMin = v;
+      if (v > uvMax) uvMax = v;
+      uvSum += v;
+      if (v !== 0) uvNonZero++;
+    }
+    console.log('[GVRM] 🔍 UV-space features (1024×1024) stats:', {
+      min: uvMin.toFixed(4),
+      max: uvMax.toFixed(4),
+      mean: (uvSum / uvSpaceFeatures1024.length).toFixed(4),
+      nonZeroRatio: (uvNonZero / uvSpaceFeatures1024.length * 100).toFixed(1) + '%'
+    });
+
+    console.log('[GVRM] ✅ Inverse Texture Mapping complete');
 
     // ========== Step 10.5: Build 155ch UV features (論文準拠) ==========
     console.log('[GVRM] Step 10.5: Building 155ch UV features (論文準拠)...');
@@ -545,14 +577,16 @@ export class GVRM {
 
     const uvResolution = 512;  // StyleUNet expects 512x512
     const uvPixels = uvResolution * uvResolution;
+    const uvMappingRes = 1024;  // UV mapping resolution
 
-    // Step 10.5.1: Prepare 32ch UV features (resample 518→512)
-    console.log('[GVRM]   Preparing 32ch UV features...');
-    const sourceRes = 518;
+    // Step 10.5.1: Resample UV-space features from 1024 to 512 (HWC→CHW format for StyleUNet)
+    console.log('[GVRM]   Resampling UV-space features (1024→512, HWC→CHW)...');
     const uvFeatures32ch = new Float32Array(32 * uvResolution * uvResolution);
 
     // Resample with bilinear interpolation (HWC to CHW)
-    const scale = sourceRes / uvResolution;
+    // Source: uvSpaceFeatures1024 is [1024, 1024, 32] in HWC format (from InverseTextureMapper)
+    // Target: uvFeatures32ch is [32, 512, 512] in CHW format (for StyleUNet)
+    const scale = uvMappingRes / uvResolution;  // 1024 / 512 = 2
     for (let c = 0; c < 32; c++) {
       for (let ty = 0; ty < uvResolution; ty++) {
         for (let tx = 0; tx < uvResolution; tx++) {
@@ -560,42 +594,42 @@ export class GVRM {
           const sy = ty * scale;
           const sx0 = Math.floor(sx);
           const sy0 = Math.floor(sy);
-          const sx1 = Math.min(sx0 + 1, sourceRes - 1);
-          const sy1 = Math.min(sy0 + 1, sourceRes - 1);
+          const sx1 = Math.min(sx0 + 1, uvMappingRes - 1);
+          const sy1 = Math.min(sy0 + 1, uvMappingRes - 1);
           const wx = sx - sx0;
           const wy = sy - sy0;
 
-          // Source is HWC format: [H, W, C]
-          const v00 = uvBranchFeatures[(sy0 * sourceRes + sx0) * 32 + c];
-          const v10 = uvBranchFeatures[(sy0 * sourceRes + sx1) * 32 + c];
-          const v01 = uvBranchFeatures[(sy1 * sourceRes + sx0) * 32 + c];
-          const v11 = uvBranchFeatures[(sy1 * sourceRes + sx1) * 32 + c];
+          // Source is HWC format: [H, W, C] from InverseTextureMapper
+          const v00 = uvSpaceFeatures1024[(sy0 * uvMappingRes + sx0) * 32 + c];
+          const v10 = uvSpaceFeatures1024[(sy0 * uvMappingRes + sx1) * 32 + c];
+          const v01 = uvSpaceFeatures1024[(sy1 * uvMappingRes + sx0) * 32 + c];
+          const v11 = uvSpaceFeatures1024[(sy1 * uvMappingRes + sx1) * 32 + c];
 
           const top = v00 * (1 - wx) + v10 * wx;
           const bottom = v01 * (1 - wx) + v11 * wx;
           const value = top * (1 - wy) + bottom * wy;
 
-          // Output is CHW format: [C, H, W]
+          // Output is CHW format: [C, H, W] for StyleUNet
           uvFeatures32ch[c * uvResolution * uvResolution + ty * uvResolution + tx] = value;
         }
       }
     }
-    console.log('[GVRM]   ✅ 32ch UV features prepared (518→512, CHW format)');
+    console.log('[GVRM]   ✅ UV-space features prepared (1024→512, CHW format)');
 
-    // 🔍 Debug: UV features statistics
-    let uvMin = Infinity, uvMax = -Infinity, uvSum = 0, uvNonZero = 0;
+    // 🔍 Debug: Resampled UV features statistics
+    let resampledMin = Infinity, resampledMax = -Infinity, resampledSum = 0, resampledNonZero = 0;
     for (let i = 0; i < uvFeatures32ch.length; i++) {
       const v = uvFeatures32ch[i];
-      if (v < uvMin) uvMin = v;
-      if (v > uvMax) uvMax = v;
-      uvSum += v;
-      if (v !== 0) uvNonZero++;
+      if (v < resampledMin) resampledMin = v;
+      if (v > resampledMax) resampledMax = v;
+      resampledSum += v;
+      if (v !== 0) resampledNonZero++;
     }
-    console.log('[GVRM]   🔍 UV features 32ch stats:', {
-      min: uvMin.toFixed(4),
-      max: uvMax.toFixed(4),
-      mean: (uvSum / uvFeatures32ch.length).toFixed(4),
-      nonZeroRatio: (uvNonZero / uvFeatures32ch.length * 100).toFixed(1) + '%'
+    console.log('[GVRM]   🔍 UV features 32ch (512×512) stats:', {
+      min: resampledMin.toFixed(4),
+      max: resampledMax.toFixed(4),
+      mean: (resampledSum / uvFeatures32ch.length).toFixed(4),
+      nonZeroRatio: (resampledNonZero / uvFeatures32ch.length * 100).toFixed(1) + '%'
     });
 
     // View direction (already computed at Step 4)
