@@ -584,11 +584,38 @@ export class GVRM {
       rotations: this.concatenateArrays(this.templateGaussians.rotations, this.uvGaussians.rotation),
       latents: this.concatenateArrays(this.templateGaussians.latents, this.uvGaussians.latent32ch)
     };
-    
+
     console.log('[GVRM] ✅ Ubody Gaussians created:', {
       total: totalCount.toLocaleString(),
       template: templateCount.toLocaleString(),
       uv: uvCount.toLocaleString()
+    });
+
+    // ========== Step 12.5: Update GSViewer with Ubody Gaussians ==========
+    console.log('[GVRM] Step 12.5: Updating GSViewer with Ubody Gaussians...');
+    console.log('[GVRM]   📖 Paper: Template + UV Gaussians combined for full avatar');
+
+    // Recreate GSViewer with complete ubodyGaussians (Template ⊕ UV)
+    if (this.gsViewer) {
+      this.gsViewer.dispose();
+    }
+
+    const ubodyGaussianData = {
+      positions: ubodyGaussians.positions,
+      latents: ubodyGaussians.latents,
+      opacity: ubodyGaussians.opacities,
+      scale: ubodyGaussians.scales,
+      rotation: ubodyGaussians.rotations,
+      boneIndices: new Float32Array(totalCount * 4),  // ダミー（スキニングなし）
+      boneWeights: new Float32Array(totalCount * 4),  // ダミー（スキニングなし）
+      vertexCount: totalCount
+    };
+
+    this.gsViewer = new GSViewer(ubodyGaussianData);
+
+    console.log('[GVRM] ✅ GSViewer updated with Ubody Gaussians:', {
+      totalGaussians: totalCount.toLocaleString(),
+      latentChannels: 32
     });
 
     // ========== Final step: Pipeline complete ==========
