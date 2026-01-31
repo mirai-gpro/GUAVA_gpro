@@ -807,12 +807,13 @@ export class GVRM {
     const totalCount = templateCount + uvCount;
 
     // UV Gaussians のワールド座標を計算
-    // Python版準拠: worldPosition = meshSurfacePosition + localOffset
-    console.log('[GVRM]   Computing UV world positions from mesh surface + local offsets...');
+    // Python版準拠: face orientation回転 + face scaling + face center
     const uvWorldPositions = this.computeUVWorldPositions(
       uvMapping,
       this.uvGaussians.localPositions,
-      uvCount
+      uvCount,
+      this.uvGaussians.triangleIndices,
+      this.uvGaussians.barycentricCoords
     );
 
     // Concatenate all Gaussian properties
