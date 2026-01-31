@@ -275,6 +275,8 @@ export class GSViewer {
    */
   public render(width: number = 512, height: number = 512, camera?: THREE.Camera): Float32Array {
     console.log('[GSViewer] Rendering 32ch coarse feature map...');
+    console.log('[GSViewer]   vertexCount:', this.vertexCount);
+    console.log('[GSViewer]   latentData length:', this.latentData.length);
 
     const featureMap = new Float32Array(32 * height * width);
     const weightMap = new Float32Array(height * width);  // For normalization
@@ -283,6 +285,11 @@ export class GSViewer {
     const projMatrix = camera
       ? new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
       : this.createDefaultProjection(width, height);
+
+    console.log('[GSViewer]   Camera provided:', !!camera);
+    if (camera) {
+      console.log('[GSViewer]   Camera position:', camera.position.toArray());
+    }
 
     // Get position attribute
     const posAttr = this.geometry.getAttribute('position') as THREE.BufferAttribute;
@@ -307,6 +314,19 @@ export class GSViewer {
     // Sort by depth (front to back for transmittance)
     gaussianDepths.sort((a, b) => a.depth - b.depth);
 
+    // Debug: depth distribution
+    let depthSkipped = 0, wSkipped = 0, outOfBounds = 0;
+    const depthStats = { min: Infinity, max: -Infinity };
+    for (const { depth } of gaussianDepths) {
+      if (depth < depthStats.min) depthStats.min = depth;
+      if (depth > depthStats.max) depthStats.max = depth;
+    }
+    console.log('[GSViewer]   Depth range:', depthStats.min.toFixed(3), 'to', depthStats.max.toFixed(3));
+
+    // Screen coordinate tracking
+    const screenStats = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+    const ndcStats = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+
     // Transmittance buffer (per pixel)
     const transmittance = new Float32Array(height * width).fill(1.0);
 
@@ -315,7 +335,10 @@ export class GSViewer {
     // Splat each Gaussian
     for (const { index: i, depth } of gaussianDepths) {
       // Skip if behind camera
-      if (depth < -1 || depth > 1) continue;
+      if (depth < -1 || depth > 1) {
+        depthSkipped++;
+        continue;
+      }
 
       // Project to screen space
       tempVec.set(
@@ -326,14 +349,34 @@ export class GSViewer {
       );
       tempVec.applyMatrix4(projMatrix);
 
-      if (tempVec.w <= 0) continue;
+      if (tempVec.w <= 0) {
+        wSkipped++;
+        continue;
+      }
 
       const ndcX = tempVec.x / tempVec.w;
       const ndcY = tempVec.y / tempVec.w;
 
+      // Track NDC stats
+      if (ndcX < ndcStats.minX) ndcStats.minX = ndcX;
+      if (ndcX > ndcStats.maxX) ndcStats.maxX = ndcX;
+      if (ndcY < ndcStats.minY) ndcStats.minY = ndcY;
+      if (ndcY > ndcStats.maxY) ndcStats.maxY = ndcY;
+
       // NDC to pixel coordinates
       const px = Math.floor((ndcX * 0.5 + 0.5) * width);
       const py = Math.floor((1.0 - (ndcY * 0.5 + 0.5)) * height);  // Y-flip
+
+      // Track screen stats
+      if (px < screenStats.minX) screenStats.minX = px;
+      if (px > screenStats.maxX) screenStats.maxX = px;
+      if (py < screenStats.minY) screenStats.minY = py;
+      if (py > screenStats.maxY) screenStats.maxY = py;
+
+      // Track out of bounds
+      if (px < 0 || px >= width || py < 0 || py >= height) {
+        outOfBounds++;
+      }
 
       // Get Gaussian attributes
       const opacity = this.opacityData[i];
@@ -399,11 +442,39 @@ export class GSViewer {
       }
     }
 
+    // Calculate statistics
+    let fmMin = Infinity, fmMax = -Infinity, fmSum = 0, fmNonZero = 0;
+    for (let i = 0; i < featureMap.length; i++) {
+      const v = featureMap[i];
+      if (v < fmMin) fmMin = v;
+      if (v > fmMax) fmMax = v;
+      fmSum += v;
+      if (v !== 0) fmNonZero++;
+    }
+
+    console.log('[GSViewer]   NDC range:', {
+      x: `[${ndcStats.minX.toFixed(3)}, ${ndcStats.maxX.toFixed(3)}]`,
+      y: `[${ndcStats.minY.toFixed(3)}, ${ndcStats.maxY.toFixed(3)}]`
+    });
+    console.log('[GSViewer]   Screen range:', {
+      x: `[${screenStats.minX}, ${screenStats.maxX}]`,
+      y: `[${screenStats.minY}, ${screenStats.maxY}]`,
+      coverageX: ((screenStats.maxX - screenStats.minX) / width * 100).toFixed(1) + '%',
+      coverageY: ((screenStats.maxY - screenStats.minY) / height * 100).toFixed(1) + '%'
+    });
+
     console.log('[GSViewer] ✅ Coarse feature map rendered:', {
       resolution: `${width}×${height}`,
       channels: 32,
       splattedGaussians: splatCount,
-      format: 'CHW'
+      depthSkipped,
+      wSkipped,
+      outOfBounds,
+      format: 'CHW',
+      nonZeroRatio: (fmNonZero / featureMap.length * 100).toFixed(1) + '%',
+      min: fmMin.toFixed(4),
+      max: fmMax.toFixed(4),
+      mean: (fmSum / featureMap.length).toFixed(6)
     });
 
     return featureMap;

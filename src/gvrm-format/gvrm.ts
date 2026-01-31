@@ -2,12 +2,13 @@
 // GUAVA pipeline implementation (WebGL GPU mode)
 // 論文準拠: Real-time UV rasterization with GPU
 
+import * as THREE from 'three';
 import { ImageEncoder } from './image-encoder';
 import { TemplateDecoder } from './template-decoder';
 import { UVDecoder } from './uv-decoder';
 import { WebGLUVRasterizer } from './webgl-uv-rasterizer';
 import { InverseTextureMapper } from './inverse-texture-mapping';
-import { NeuralRefiner } from './neural-refiner';
+import { RFDNRefiner } from './rfdn-refiner-webgpu';
 import { WebGLDisplay } from './webgl-display';
 import { GSViewer } from './gs';
 import { UVStyleUNet } from './uv-styleunet';
@@ -76,7 +77,7 @@ export class GVRM {
   private uvStyleUNet: UVStyleUNet | null = null;  // 論文準拠: 35ch → 96ch (null in mobile mode)
   private webglRasterizer: WebGLUVRasterizer;
   private inverseMapper: InverseTextureMapper | null = null;
-  private neuralRefiner: NeuralRefiner;
+  private neuralRefiner: RFDNRefiner;
   private display: WebGLDisplay | null = null;
   private gsViewer: GSViewer | null = null;
 
@@ -98,6 +99,16 @@ export class GVRM {
   // Neural Refiner用のidEmbedding (256ch)
   private idEmbedding256: Float32Array | null = null;
 
+  // ソースカメラ設定（render時に使用）
+  private sourceCameraConfig: {
+    position: [number, number, number];
+    target: [number, number, number];
+    fov: number;
+  } | null = null;
+
+  // UV Mapping（ワールド座標を含む）
+  private uvMappingWorldPositions: Float32Array | null = null;
+
   /**
    * コンストラクタ
    * @param displayContainer 表示コンテナ（オプション、init()のconfigでも指定可能）
@@ -113,7 +124,10 @@ export class GVRM {
     this.uvDecoder = new UVDecoder();
     // uvStyleUNet is created conditionally in init() based on mobileMode
     this.webglRasterizer = new WebGLUVRasterizer();
-    this.neuralRefiner = new NeuralRefiner();
+    this.neuralRefiner = new RFDNRefiner({
+      modelPath: '/assets/simpleunet_trained.onnx',
+      useWebGPU: true  // WebGPU対応ブラウザで高速化
+    });
   }
 
   /**
@@ -199,6 +213,13 @@ export class GVRM {
     console.log('[GVRM] Loading source camera config for coordinate alignment...');
     const sourceCameraConfig = await this.loadSourceCameraConfig();
     console.log('[GVRM] Source camera target:', sourceCameraConfig.target);
+
+    // Store for render() use
+    this.sourceCameraConfig = {
+      position: sourceCameraConfig.position,
+      target: sourceCameraConfig.target,
+      fov: sourceCameraConfig.fov
+    };
 
     // ========== Step 0.5: Load PLY file ==========
     // Use configurable templatePath (concierge-controller.ts互換)
@@ -299,6 +320,9 @@ export class GVRM {
       rotations: templateOutput.rotation,
       latents: templateOutput.rgb  // 新版: rgb (旧版: latent32ch)
     };
+
+    // Python版準拠: 最初の3チャンネルにsigmoidを適用してRGBに変換
+    this.applySigmoidToRGB(this.templateGaussians.latents, templateVertexCount);
 
     // Store idEmbedding256 for Neural Refiner
     if (templateOutput.idEmbedding256) {
@@ -462,6 +486,9 @@ export class GVRM {
       validPixels: uvMapping.validMask.reduce((sum, v) => sum + v, 0).toLocaleString(),
       coverage: (uvMapping.validMask.reduce((sum, v) => sum + v, 0) / (1024 * 1024) * 100).toFixed(1) + '%'
     });
+
+    // Store world positions for UV Gaussians (Step 12で使用)
+    this.uvMappingWorldPositions = uvMapping.worldPositions;
 
     // ========== Step 9.5: Initialize InverseTextureMapper ==========
     console.log('[GVRM] Step 9.5: Initializing InverseTextureMapper...');
@@ -628,6 +655,9 @@ export class GVRM {
       count: this.uvGaussians.uvCount
     });
 
+    // Python版準拠: UV Gaussians の最初の3チャンネルにsigmoidを適用
+    this.applySigmoidToRGB(this.uvGaussians.latent32ch, this.uvGaussians.uvCount);
+
     // ========== Step 12: Create Ubody Gaussians (Template ⊕ UV) ==========
     console.log('[GVRM] Step 12: Creating Ubody Gaussians (Template ⊕ UV)...');
 
@@ -635,10 +665,18 @@ export class GVRM {
     const uvCount = this.uvGaussians.uvCount;
     const totalCount = templateCount + uvCount;
 
+    // UV Gaussians のワールド座標を計算
+    // Python版準拠: worldPosition = meshSurfacePosition + localOffset
+    console.log('[GVRM]   Computing UV world positions from mesh surface + local offsets...');
+    const uvWorldPositions = this.computeUVWorldPositions(
+      uvMapping,
+      this.uvGaussians.localPositions,
+      uvCount
+    );
+
     // Concatenate all Gaussian properties
-    // Note: UV Gaussians use different property names
     const ubodyGaussians = {
-      positions: this.concatenateArrays(this.templateGaussians.positions, this.uvGaussians.localPositions),
+      positions: this.concatenateArrays(this.templateGaussians.positions, uvWorldPositions),
       opacities: this.concatenateArrays(this.templateGaussians.opacities, this.uvGaussians.opacity),
       scales: this.concatenateArrays(this.templateGaussians.scales, this.uvGaussians.scale),
       rotations: this.concatenateArrays(this.templateGaussians.rotations, this.uvGaussians.rotation),
@@ -694,6 +732,166 @@ export class GVRM {
     return result;
   }
 
+  /**
+   * UV Gaussians のワールド座標を計算
+   * Python版準拠: メッシュ表面の座標 + ローカルオフセット
+   *
+   * CRITICAL FIX: uvMapping.uvCoords はピクセル座標(Uint16Array)であり、
+   * 正規化座標(0-1)ではない！直接使用する必要がある。
+   *
+   * @param uvMapping UV rasterization の結果（WebGLラスタライザからの出力）
+   * @param localPositions UV Decoder からのローカルオフセット [N, 3]
+   * @param uvCount 有効なUVピクセル数
+   */
+  private computeUVWorldPositions(
+    uvMapping: { worldPositions: Float32Array; uvCoords: Uint16Array; width: number; height: number },
+    localPositions: Float32Array,
+    uvCount: number
+  ): Float32Array {
+    const worldPositions = new Float32Array(uvCount * 3);
+    const mappingWidth = uvMapping.width;
+    const mappingHeight = uvMapping.height;
+    const totalPixels = mappingWidth * mappingHeight;
+
+    let validCount = 0;
+    let invalidCount = 0;
+    let localSum = 0;
+
+    // Debug: サンプルチェック
+    if (uvCount > 0) {
+      const sampleU = uvMapping.uvCoords[0];
+      const sampleV = uvMapping.uvCoords[1];
+      console.log('[GVRM]   UV coord sample (first pixel):', {
+        u: sampleU, v: sampleV,
+        expectedRange: `0-${mappingWidth - 1}`,
+        isPixelCoord: sampleU < mappingWidth && sampleV < mappingHeight
+      });
+    }
+
+    for (let i = 0; i < uvCount; i++) {
+      // CRITICAL: uvCoords は絶対ピクセル座標（Uint16Array: 0 to resolution-1）
+      // 正規化座標ではないので、直接使用する
+      const u = uvMapping.uvCoords[i * 2 + 0];  // ピクセル座標（0 to width-1）
+      const v = uvMapping.uvCoords[i * 2 + 1];  // ピクセル座標（0 to height-1）
+
+      // 境界チェック
+      if (u >= mappingWidth || v >= mappingHeight) {
+        if (invalidCount < 5) {
+          console.warn(`[GVRM]   Invalid UV pixel coord at ${i}: (${u}, ${v}) >= (${mappingWidth}, ${mappingHeight})`);
+        }
+        invalidCount++;
+        continue;
+      }
+
+      const pixelIdx = v * mappingWidth + u;
+
+      // 境界チェック（worldPositions配列）
+      if (pixelIdx >= totalPixels) {
+        if (invalidCount < 5) {
+          console.warn(`[GVRM]   Invalid pixel index: ${pixelIdx} >= ${totalPixels}`);
+        }
+        invalidCount++;
+        continue;
+      }
+
+      // メッシュ表面のワールド座標を取得
+      const surfaceX = uvMapping.worldPositions[pixelIdx * 3 + 0];
+      const surfaceY = uvMapping.worldPositions[pixelIdx * 3 + 1];
+      const surfaceZ = uvMapping.worldPositions[pixelIdx * 3 + 2];
+
+      // ローカルオフセットを取得
+      const localX = localPositions[i * 3 + 0];
+      const localY = localPositions[i * 3 + 1];
+      const localZ = localPositions[i * 3 + 2];
+
+      // ワールド座標 = メッシュ表面 + ローカルオフセット
+      // Note: Python版ではface orientationで回転させるが、簡略化のため直接加算
+      worldPositions[i * 3 + 0] = surfaceX + localX;
+      worldPositions[i * 3 + 1] = surfaceY + localY;
+      worldPositions[i * 3 + 2] = surfaceZ + localZ;
+
+      if (!isNaN(surfaceX) && surfaceX !== 0) validCount++;
+      localSum += Math.abs(localX) + Math.abs(localY) + Math.abs(localZ);
+    }
+
+    // サーフェス位置のサンプル出力
+    if (validCount > 0) {
+      let sampleIdx = -1;
+      for (let i = 0; i < Math.min(100, uvCount); i++) {
+        const u = uvMapping.uvCoords[i * 2 + 0];
+        const v = uvMapping.uvCoords[i * 2 + 1];
+        if (u < mappingWidth && v < mappingHeight) {
+          const pixelIdx = v * mappingWidth + u;
+          const sx = uvMapping.worldPositions[pixelIdx * 3 + 0];
+          if (!isNaN(sx) && sx !== 0) {
+            console.log('[GVRM]   Sample surface position:', {
+              i,
+              uvPixel: [u, v],
+              surfacePos: [
+                uvMapping.worldPositions[pixelIdx * 3 + 0].toFixed(4),
+                uvMapping.worldPositions[pixelIdx * 3 + 1].toFixed(4),
+                uvMapping.worldPositions[pixelIdx * 3 + 2].toFixed(4)
+              ],
+              localOffset: [
+                localPositions[i * 3 + 0].toFixed(4),
+                localPositions[i * 3 + 1].toFixed(4),
+                localPositions[i * 3 + 2].toFixed(4)
+              ]
+            });
+            break;
+          }
+        }
+      }
+    }
+
+    console.log('[GVRM]   UV world positions computed:', {
+      count: uvCount,
+      validSurfacePositions: validCount,
+      invalidCoords: invalidCount,
+      avgLocalOffset: (localSum / uvCount / 3).toFixed(4)
+    });
+
+    if (validCount === 0) {
+      console.error('[GVRM] ❌ CRITICAL: All surface positions are invalid!');
+      console.error('[GVRM]   This means UV mapping worldPositions lookup is failing');
+      console.error('[GVRM]   Check: worldPositions array size =', uvMapping.worldPositions.length);
+      console.error('[GVRM]   Check: First few worldPositions:',
+        Array.from(uvMapping.worldPositions.slice(0, 15)).map(v => v.toFixed(4)));
+    }
+
+    return worldPositions;
+  }
+
+  /**
+   * 32ch latent features の最初の3チャンネル(RGB)にsigmoidを適用
+   * Python版準拠: ubody_gaussian.py lines 186-187
+   * @param latents [N, 32] 形式のlatent features
+   * @param numVertices 頂点数
+   */
+  private applySigmoidToRGB(latents: Float32Array, numVertices: number): void {
+    console.log('[GVRM] Applying sigmoid to first 3 channels (RGB)...');
+
+    // latents is [N, 32] flattened, so latents[i * 32 + c] is channel c of vertex i
+    for (let i = 0; i < numVertices; i++) {
+      for (let c = 0; c < 3; c++) {  // Only first 3 channels (RGB)
+        const idx = i * 32 + c;
+        const raw = latents[idx];
+        latents[idx] = 1.0 / (1.0 + Math.exp(-raw));  // sigmoid
+      }
+    }
+
+    // Debug: check RGB range after sigmoid
+    let minRGB = Infinity, maxRGB = -Infinity;
+    for (let i = 0; i < Math.min(1000, numVertices); i++) {
+      for (let c = 0; c < 3; c++) {
+        const v = latents[i * 32 + c];
+        if (v < minRGB) minRGB = v;
+        if (v > maxRGB) maxRGB = v;
+      }
+    }
+    console.log('[GVRM]   RGB range after sigmoid:', { min: minRGB.toFixed(4), max: maxRGB.toFixed(4) });
+  }
+
   async render(): Promise<void> {
     if (!this.initialized || !this.gsViewer) {
       throw new Error('[GVRM] Not initialized');
@@ -704,22 +902,34 @@ export class GVRM {
       return;
     }
 
-    if (!this.idEmbedding256) {
-      console.warn('[GVRM] No idEmbedding256 available, skipping render');
-      return;
-    }
-
     console.log('[GVRM] Rendering avatar...');
 
-    // Step 1: Render coarse feature map (32ch)
-    const coarseFeatureMap = this.gsViewer.render();
+    // Step 1: Create camera from source camera config
+    let camera: THREE.PerspectiveCamera | undefined;
+    if (this.sourceCameraConfig) {
+      const { position, target, fov } = this.sourceCameraConfig;
+      camera = new THREE.PerspectiveCamera(fov, 1.0, 0.1, 100);
+      camera.position.set(position[0], position[1], position[2]);
+      camera.lookAt(target[0], target[1], target[2]);
+      camera.updateMatrixWorld();
+      console.log('[GVRM]   Using source camera:', {
+        position,
+        target,
+        fov
+      });
+    } else {
+      console.warn('[GVRM]   No source camera config, using default');
+    }
+
+    // Step 2: Render coarse feature map (32ch) with proper camera
+    const coarseFeatureMap = this.gsViewer.render(512, 512, camera);
     console.log('[GVRM]   Coarse feature map rendered:', coarseFeatureMap.length);
 
-    // Step 2: Neural refinement (32ch → 3ch RGB)
-    const refinedImage = await this.neuralRefiner.run(coarseFeatureMap, this.idEmbedding256);
+    // Step 3: Neural refinement (32ch → 3ch RGB)
+    const refinedImage = await this.neuralRefiner.process(coarseFeatureMap);
     console.log('[GVRM]   Neural refinement complete:', refinedImage.length);
 
-    // Step 3: Display
+    // Step 4: Display
     this.display.display(refinedImage);
     console.log('[GVRM] ✅ Avatar rendered');
   }
