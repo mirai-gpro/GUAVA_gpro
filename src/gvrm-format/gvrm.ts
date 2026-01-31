@@ -106,6 +106,9 @@ export class GVRM {
     fov: number;
   } | null = null;
 
+  // UV Mapping（ワールド座標を含む）
+  private uvMappingWorldPositions: Float32Array | null = null;
+
   /**
    * コンストラクタ
    * @param displayContainer 表示コンテナ（オプション、init()のconfigでも指定可能）
@@ -484,6 +487,9 @@ export class GVRM {
       coverage: (uvMapping.validMask.reduce((sum, v) => sum + v, 0) / (1024 * 1024) * 100).toFixed(1) + '%'
     });
 
+    // Store world positions for UV Gaussians (Step 12で使用)
+    this.uvMappingWorldPositions = uvMapping.worldPositions;
+
     // ========== Step 9.5: Initialize InverseTextureMapper ==========
     console.log('[GVRM] Step 9.5: Initializing InverseTextureMapper...');
 
@@ -659,10 +665,18 @@ export class GVRM {
     const uvCount = this.uvGaussians.uvCount;
     const totalCount = templateCount + uvCount;
 
+    // UV Gaussians のワールド座標を計算
+    // Python版準拠: worldPosition = meshSurfacePosition + localOffset
+    console.log('[GVRM]   Computing UV world positions from mesh surface + local offsets...');
+    const uvWorldPositions = this.computeUVWorldPositions(
+      uvMapping,
+      this.uvGaussians.localPositions,
+      uvCount
+    );
+
     // Concatenate all Gaussian properties
-    // Note: UV Gaussians use different property names
     const ubodyGaussians = {
-      positions: this.concatenateArrays(this.templateGaussians.positions, this.uvGaussians.localPositions),
+      positions: this.concatenateArrays(this.templateGaussians.positions, uvWorldPositions),
       opacities: this.concatenateArrays(this.templateGaussians.opacities, this.uvGaussians.opacity),
       scales: this.concatenateArrays(this.templateGaussians.scales, this.uvGaussians.scale),
       rotations: this.concatenateArrays(this.templateGaussians.rotations, this.uvGaussians.rotation),
@@ -716,6 +730,62 @@ export class GVRM {
     result.set(a, 0);
     result.set(b, a.length);
     return result;
+  }
+
+  /**
+   * UV Gaussians のワールド座標を計算
+   * Python版準拠: メッシュ表面の座標 + ローカルオフセット
+   * @param uvMapping UV rasterization の結果
+   * @param localPositions UV Decoder からのローカルオフセット [N, 3]
+   * @param uvCount 有効なUVピクセル数
+   */
+  private computeUVWorldPositions(
+    uvMapping: { worldPositions: Float32Array; uvCoords: Float32Array; width: number; height: number },
+    localPositions: Float32Array,
+    uvCount: number
+  ): Float32Array {
+    const worldPositions = new Float32Array(uvCount * 3);
+    const mappingWidth = uvMapping.width;
+    const mappingHeight = uvMapping.height;
+
+    let validCount = 0;
+    let localSum = 0;
+
+    for (let i = 0; i < uvCount; i++) {
+      // UV座標からピクセルインデックスを計算
+      const uNorm = uvMapping.uvCoords[i * 2 + 0];  // 0-1 normalized
+      const vNorm = uvMapping.uvCoords[i * 2 + 1];
+      const u = Math.floor(uNorm * mappingWidth);
+      const v = Math.floor(vNorm * mappingHeight);
+      const pixelIdx = v * mappingWidth + u;
+
+      // メッシュ表面のワールド座標を取得
+      const surfaceX = uvMapping.worldPositions[pixelIdx * 3 + 0];
+      const surfaceY = uvMapping.worldPositions[pixelIdx * 3 + 1];
+      const surfaceZ = uvMapping.worldPositions[pixelIdx * 3 + 2];
+
+      // ローカルオフセットを取得
+      const localX = localPositions[i * 3 + 0];
+      const localY = localPositions[i * 3 + 1];
+      const localZ = localPositions[i * 3 + 2];
+
+      // ワールド座標 = メッシュ表面 + ローカルオフセット
+      // Note: Python版ではface orientationで回転させるが、簡略化のため直接加算
+      worldPositions[i * 3 + 0] = surfaceX + localX;
+      worldPositions[i * 3 + 1] = surfaceY + localY;
+      worldPositions[i * 3 + 2] = surfaceZ + localZ;
+
+      if (!isNaN(surfaceX)) validCount++;
+      localSum += Math.abs(localX) + Math.abs(localY) + Math.abs(localZ);
+    }
+
+    console.log('[GVRM]   UV world positions computed:', {
+      count: uvCount,
+      validSurfacePositions: validCount,
+      avgLocalOffset: (localSum / uvCount / 3).toFixed(4)
+    });
+
+    return worldPositions;
   }
 
   /**
