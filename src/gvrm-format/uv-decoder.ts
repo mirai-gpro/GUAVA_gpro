@@ -453,17 +453,32 @@ export class UVDecoder {
     
     // マッピングに従ってデータを抽出
     console.log('[UVDecoder] Extracting valid pixels...');
-    
+
+    // マッピングの解像度とUV特徴マップの解像度が異なる場合のスケール
+    const mappingWidth = this.mapping.width;
+    const mappingHeight = this.mapping.height;
+    const scaleU = uvWidth / mappingWidth;
+    const scaleV = uvHeight / mappingHeight;
+
+    console.log('[UVDecoder] Resolution scaling:', {
+      mapping: `${mappingWidth}×${mappingHeight}`,
+      features: `${uvWidth}×${uvHeight}`,
+      scale: `${scaleU.toFixed(3)}×${scaleV.toFixed(3)}`
+    });
+
     let invalidCoordCount = 0;
-    
+
     for (let i = 0; i < numValid; i++) {
-      const u = this.mapping.uvCoords[i * 2 + 0];
-      const v = this.mapping.uvCoords[i * 2 + 1];
-      
+      // マッピング座標をUV特徴マップ座標にスケーリング
+      const uOrig = this.mapping.uvCoords[i * 2 + 0];
+      const vOrig = this.mapping.uvCoords[i * 2 + 1];
+      const u = Math.floor(uOrig * scaleU);
+      const v = Math.floor(vOrig * scaleV);
+
       // ✅ 座標検証
-      if (u >= uvWidth || v >= uvHeight) {
+      if (u >= uvWidth || v >= uvHeight || u < 0 || v < 0) {
         if (invalidCoordCount < 10) {
-          console.warn(`[UVDecoder] Invalid UV coords at ${i}: (${u}, ${v})`);
+          console.warn(`[UVDecoder] Invalid UV coords at ${i}: (${uOrig}, ${vOrig}) → (${u}, ${v})`);
         }
         invalidCoordCount++;
         continue;
