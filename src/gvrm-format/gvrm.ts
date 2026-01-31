@@ -875,130 +875,171 @@ export class GVRM {
 
   /**
    * UV Gaussians のワールド座標を計算
-   * Python版準拠: メッシュ表面の座標 + ローカルオフセット
+   * Python版準拠: face orientation matrix による回転 + face scaling + face center
    *
-   * CRITICAL FIX: uvMapping.uvCoords はピクセル座標(Uint16Array)であり、
-   * 正規化座標(0-1)ではない！直接使用する必要がある。
-   *
-   * @param uvMapping UV rasterization の結果（WebGLラスタライザからの出力）
-   * @param localPositions UV Decoder からのローカルオフセット [N, 3]
-   * @param uvCount 有効なUVピクセル数
+   * Python実装 (ubody_gaussian.py line 238-239):
+   *   face_orien_mat, face_scaling = compute_face_orientation(vertices, faces)
+   *   xyz = einsum('bnij,bnj->bni', face_orien_mat, local_xyz)  # 回転
+   *   world_pos = xyz * face_scaling + face_center  # スケール + 平行移動
    */
   private computeUVWorldPositions(
-    uvMapping: { worldPositions: Float32Array; uvCoords: Uint16Array; width: number; height: number },
+    uvMapping: { worldPositions: Float32Array; uvCoords: Uint16Array; triangleIndices: Uint32Array; barycentricCoords: Float32Array; width: number; height: number },
     localPositions: Float32Array,
-    uvCount: number
+    uvCount: number,
+    triangleIndicesPerGaussian: Uint32Array,
+    barycentricCoordsPerGaussian: Float32Array
   ): Float32Array {
+    console.log('[GVRM]   Computing UV world positions with face orientation...');
+
+    if (!this.templateMesh) {
+      throw new Error('[GVRM] Template mesh not loaded');
+    }
+
+    const vertices = this.templateMesh.vertices;
+    const triangles = this.templateMesh.triangles;
+    const numFaces = triangles.length / 3;
+
+    // Step 1: Compute face orientation matrices and scaling for all faces
+    console.log('[GVRM]   Step 1: Computing face orientations for', numFaces, 'faces...');
+    const faceOrientations = new Float32Array(numFaces * 9);  // 3x3 matrix per face
+    const faceScaling = new Float32Array(numFaces);
+    const faceCenters = new Float32Array(numFaces * 3);
+
+    for (let f = 0; f < numFaces; f++) {
+      const i0 = triangles[f * 3 + 0];
+      const i1 = triangles[f * 3 + 1];
+      const i2 = triangles[f * 3 + 2];
+
+      // Get vertices
+      const v0x = vertices[i0 * 3 + 0], v0y = vertices[i0 * 3 + 1], v0z = vertices[i0 * 3 + 2];
+      const v1x = vertices[i1 * 3 + 0], v1y = vertices[i1 * 3 + 1], v1z = vertices[i1 * 3 + 2];
+      const v2x = vertices[i2 * 3 + 0], v2y = vertices[i2 * 3 + 1], v2z = vertices[i2 * 3 + 2];
+
+      // Face center
+      faceCenters[f * 3 + 0] = (v0x + v1x + v2x) / 3;
+      faceCenters[f * 3 + 1] = (v0y + v1y + v2y) / 3;
+      faceCenters[f * 3 + 2] = (v0z + v1z + v2z) / 3;
+
+      // a0 = normalize(v1 - v0) - tangent
+      let a0x = v1x - v0x, a0y = v1y - v0y, a0z = v1z - v0z;
+      const len0 = Math.sqrt(a0x * a0x + a0y * a0y + a0z * a0z) + 1e-8;
+      a0x /= len0; a0y /= len0; a0z /= len0;
+
+      // edge v2 - v0
+      const e2x = v2x - v0x, e2y = v2y - v0y, e2z = v2z - v0z;
+
+      // a1 = normalize(cross(a0, v2-v0)) - normal
+      let a1x = a0y * e2z - a0z * e2y;
+      let a1y = a0z * e2x - a0x * e2z;
+      let a1z = a0x * e2y - a0y * e2x;
+      const len1 = Math.sqrt(a1x * a1x + a1y * a1y + a1z * a1z) + 1e-8;
+      a1x /= len1; a1y /= len1; a1z /= len1;
+
+      // a2 = -normalize(cross(a1, a0)) - bitangent
+      let a2x = -(a1y * a0z - a1z * a0y);
+      let a2y = -(a1z * a0x - a1x * a0z);
+      let a2z = -(a1x * a0y - a1y * a0x);
+      const len2 = Math.sqrt(a2x * a2x + a2y * a2y + a2z * a2z) + 1e-8;
+      a2x /= len2; a2y /= len2; a2z /= len2;
+
+      // Store orientation matrix [a0, a1, a2] as columns (row-major storage)
+      // orientation[i, j] = column j, row i
+      faceOrientations[f * 9 + 0] = a0x; faceOrientations[f * 9 + 1] = a1x; faceOrientations[f * 9 + 2] = a2x;
+      faceOrientations[f * 9 + 3] = a0y; faceOrientations[f * 9 + 4] = a1y; faceOrientations[f * 9 + 5] = a2y;
+      faceOrientations[f * 9 + 6] = a0z; faceOrientations[f * 9 + 7] = a1z; faceOrientations[f * 9 + 8] = a2z;
+
+      // Face scaling = (edge0_length + height) / 2
+      // s0 = length(v1 - v0)
+      const s0 = len0;
+      // s1 = abs(dot(a2, v2-v0))
+      const s1 = Math.abs(a2x * e2x + a2y * e2y + a2z * e2z);
+      faceScaling[f] = (s0 + s1) / 2;
+    }
+
+    console.log('[GVRM]   Step 2: Transforming', uvCount, 'UV Gaussian positions...');
+
     const worldPositions = new Float32Array(uvCount * 3);
-    const mappingWidth = uvMapping.width;
-    const mappingHeight = uvMapping.height;
-    const totalPixels = mappingWidth * mappingHeight;
-
     let validCount = 0;
-    let invalidCount = 0;
-    let localSum = 0;
+    let invalidFaceCount = 0;
 
-    // Debug: サンプルチェック
+    for (let i = 0; i < uvCount; i++) {
+      // Get the face index for this UV Gaussian
+      const faceIdx = triangleIndicesPerGaussian[i];
+
+      if (faceIdx >= numFaces) {
+        invalidFaceCount++;
+        continue;
+      }
+
+      // Get face orientation matrix
+      const m00 = faceOrientations[faceIdx * 9 + 0];
+      const m01 = faceOrientations[faceIdx * 9 + 1];
+      const m02 = faceOrientations[faceIdx * 9 + 2];
+      const m10 = faceOrientations[faceIdx * 9 + 3];
+      const m11 = faceOrientations[faceIdx * 9 + 4];
+      const m12 = faceOrientations[faceIdx * 9 + 5];
+      const m20 = faceOrientations[faceIdx * 9 + 6];
+      const m21 = faceOrientations[faceIdx * 9 + 7];
+      const m22 = faceOrientations[faceIdx * 9 + 8];
+
+      // Get face scaling
+      const scale = faceScaling[faceIdx];
+
+      // Get local position
+      const lx = localPositions[i * 3 + 0];
+      const ly = localPositions[i * 3 + 1];
+      const lz = localPositions[i * 3 + 2];
+
+      // Rotate by face orientation: xyz = M @ local
+      const rx = m00 * lx + m01 * ly + m02 * lz;
+      const ry = m10 * lx + m11 * ly + m12 * lz;
+      const rz = m20 * lx + m21 * ly + m22 * lz;
+
+      // Get face center using barycentric coords
+      const bary0 = barycentricCoordsPerGaussian[i * 3 + 0];
+      const bary1 = barycentricCoordsPerGaussian[i * 3 + 1];
+      const bary2 = barycentricCoordsPerGaussian[i * 3 + 2];
+
+      const i0 = triangles[faceIdx * 3 + 0];
+      const i1 = triangles[faceIdx * 3 + 1];
+      const i2 = triangles[faceIdx * 3 + 2];
+
+      const cx = vertices[i0 * 3 + 0] * bary0 + vertices[i1 * 3 + 0] * bary1 + vertices[i2 * 3 + 0] * bary2;
+      const cy = vertices[i0 * 3 + 1] * bary0 + vertices[i1 * 3 + 1] * bary1 + vertices[i2 * 3 + 1] * bary2;
+      const cz = vertices[i0 * 3 + 2] * bary0 + vertices[i1 * 3 + 2] * bary1 + vertices[i2 * 3 + 2] * bary2;
+
+      // World position = rotated_local * scale + face_center
+      worldPositions[i * 3 + 0] = rx * scale + cx;
+      worldPositions[i * 3 + 1] = ry * scale + cy;
+      worldPositions[i * 3 + 2] = rz * scale + cz;
+
+      validCount++;
+    }
+
+    // Debug output
     if (uvCount > 0) {
-      const sampleU = uvMapping.uvCoords[0];
-      const sampleV = uvMapping.uvCoords[1];
-      console.log('[GVRM]   UV coord sample (first pixel):', {
-        u: sampleU, v: sampleV,
-        expectedRange: `0-${mappingWidth - 1}`,
-        isPixelCoord: sampleU < mappingWidth && sampleV < mappingHeight
+      const sampleIdx = Math.min(100, uvCount - 1);
+      console.log('[GVRM]   Sample UV Gaussian transformation:', {
+        index: sampleIdx,
+        faceIdx: triangleIndicesPerGaussian[sampleIdx],
+        localPos: [
+          localPositions[sampleIdx * 3 + 0].toFixed(4),
+          localPositions[sampleIdx * 3 + 1].toFixed(4),
+          localPositions[sampleIdx * 3 + 2].toFixed(4)
+        ],
+        worldPos: [
+          worldPositions[sampleIdx * 3 + 0].toFixed(4),
+          worldPositions[sampleIdx * 3 + 1].toFixed(4),
+          worldPositions[sampleIdx * 3 + 2].toFixed(4)
+        ]
       });
     }
 
-    for (let i = 0; i < uvCount; i++) {
-      // CRITICAL: uvCoords は絶対ピクセル座標（Uint16Array: 0 to resolution-1）
-      // 正規化座標ではないので、直接使用する
-      const u = uvMapping.uvCoords[i * 2 + 0];  // ピクセル座標（0 to width-1）
-      const v = uvMapping.uvCoords[i * 2 + 1];  // ピクセル座標（0 to height-1）
-
-      // 境界チェック
-      if (u >= mappingWidth || v >= mappingHeight) {
-        if (invalidCount < 5) {
-          console.warn(`[GVRM]   Invalid UV pixel coord at ${i}: (${u}, ${v}) >= (${mappingWidth}, ${mappingHeight})`);
-        }
-        invalidCount++;
-        continue;
-      }
-
-      const pixelIdx = v * mappingWidth + u;
-
-      // 境界チェック（worldPositions配列）
-      if (pixelIdx >= totalPixels) {
-        if (invalidCount < 5) {
-          console.warn(`[GVRM]   Invalid pixel index: ${pixelIdx} >= ${totalPixels}`);
-        }
-        invalidCount++;
-        continue;
-      }
-
-      // メッシュ表面のワールド座標を取得
-      const surfaceX = uvMapping.worldPositions[pixelIdx * 3 + 0];
-      const surfaceY = uvMapping.worldPositions[pixelIdx * 3 + 1];
-      const surfaceZ = uvMapping.worldPositions[pixelIdx * 3 + 2];
-
-      // ローカルオフセットを取得
-      const localX = localPositions[i * 3 + 0];
-      const localY = localPositions[i * 3 + 1];
-      const localZ = localPositions[i * 3 + 2];
-
-      // ワールド座標 = メッシュ表面 + ローカルオフセット
-      // Note: Python版ではface orientationで回転させるが、簡略化のため直接加算
-      worldPositions[i * 3 + 0] = surfaceX + localX;
-      worldPositions[i * 3 + 1] = surfaceY + localY;
-      worldPositions[i * 3 + 2] = surfaceZ + localZ;
-
-      if (!isNaN(surfaceX) && surfaceX !== 0) validCount++;
-      localSum += Math.abs(localX) + Math.abs(localY) + Math.abs(localZ);
-    }
-
-    // サーフェス位置のサンプル出力
-    if (validCount > 0) {
-      let sampleIdx = -1;
-      for (let i = 0; i < Math.min(100, uvCount); i++) {
-        const u = uvMapping.uvCoords[i * 2 + 0];
-        const v = uvMapping.uvCoords[i * 2 + 1];
-        if (u < mappingWidth && v < mappingHeight) {
-          const pixelIdx = v * mappingWidth + u;
-          const sx = uvMapping.worldPositions[pixelIdx * 3 + 0];
-          if (!isNaN(sx) && sx !== 0) {
-            console.log('[GVRM]   Sample surface position:', {
-              i,
-              uvPixel: [u, v],
-              surfacePos: [
-                uvMapping.worldPositions[pixelIdx * 3 + 0].toFixed(4),
-                uvMapping.worldPositions[pixelIdx * 3 + 1].toFixed(4),
-                uvMapping.worldPositions[pixelIdx * 3 + 2].toFixed(4)
-              ],
-              localOffset: [
-                localPositions[i * 3 + 0].toFixed(4),
-                localPositions[i * 3 + 1].toFixed(4),
-                localPositions[i * 3 + 2].toFixed(4)
-              ]
-            });
-            break;
-          }
-        }
-      }
-    }
-
-    console.log('[GVRM]   UV world positions computed:', {
+    console.log('[GVRM]   ✅ UV world positions computed with face orientation:', {
       count: uvCount,
-      validSurfacePositions: validCount,
-      invalidCoords: invalidCount,
-      avgLocalOffset: (localSum / uvCount / 3).toFixed(4)
+      validTransforms: validCount,
+      invalidFaces: invalidFaceCount
     });
-
-    if (validCount === 0) {
-      console.error('[GVRM] ❌ CRITICAL: All surface positions are invalid!');
-      console.error('[GVRM]   This means UV mapping worldPositions lookup is failing');
-      console.error('[GVRM]   Check: worldPositions array size =', uvMapping.worldPositions.length);
-      console.error('[GVRM]   Check: First few worldPositions:',
-        Array.from(uvMapping.worldPositions.slice(0, 15)).map(v => v.toFixed(4)));
-    }
 
     return worldPositions;
   }
