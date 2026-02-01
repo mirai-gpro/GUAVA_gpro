@@ -14,14 +14,14 @@ import os
 GUAVA_REPO = "https://github.com/mirai-gpro/GUAVA_gpro.git"
 
 # Modal Image定義 - NVIDIA CUDA base image for CUDA extension compilation
-# Image version: v6 (fix chumpy build isolation)
+# Image version: v7 (Python 3.9 + numpy==1.23.5 for chumpy compatibility)
 guava_image = (
     modal.Image.from_registry(
         "nvidia/cuda:12.1.0-devel-ubuntu22.04",
-        add_python="3.10"
+        add_python="3.9"
     )
     .env({
-        "IMAGE_VERSION": "6",
+        "IMAGE_VERSION": "7",
         "CUDA_HOME": "/usr/local/cuda",
         "PATH": "/usr/local/cuda/bin:$PATH",
         "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:$LD_LIBRARY_PATH",
@@ -34,15 +34,17 @@ guava_image = (
         "libsndfile1",
         "build-essential",
         "ninja-build",
+        "libsm6",
+        "libxext6",
+        "libxrender-dev",
     )
-    # Upgrade pip first to avoid build issues
-    .run_commands("pip install --upgrade pip setuptools wheel")
     .pip_install(
         "torch==2.1.0",
         "torchvision==0.16.0",
-        "numpy<2",
+        "numpy==1.23.5",
+        "chumpy",
         "scipy",
-        "opencv-python",
+        "opencv-python-headless",
         "h5py",
         "tqdm",
         "imageio",
@@ -56,7 +58,6 @@ guava_image = (
         "roma",
         # Additional GUAVA dependencies
         "plyfile",
-        # chumpy installed separately with --no-build-isolation
         "easydict",
         "kornia",
         "transformers",
@@ -66,8 +67,6 @@ guava_image = (
         "tyro",
         "ninja",
     )
-    # Install chumpy with --no-build-isolation to bypass setup.py import pip issue
-    .run_commands("pip install chumpy --no-build-isolation")
     .pip_install("gsplat==0.1.11")
     .pip_install("git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7")
     .run_commands(
