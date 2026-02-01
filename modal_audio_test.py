@@ -14,8 +14,10 @@ import os
 GUAVA_REPO = "https://github.com/mirai-gpro/GUAVA_gpro.git"
 
 # Modal Image定義 - GitHubからコードを取得
+# Image version: v2 (force rebuild with all dependencies)
 guava_image = (
     modal.Image.debian_slim(python_version="3.10")
+    .env({"IMAGE_VERSION": "2"})  # Force rebuild
     .apt_install(
         "libgl1-mesa-glx",
         "libglib2.0-0",
