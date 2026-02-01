@@ -56,7 +56,7 @@ guava_image = (
         "cd /root/GUAVA/submodules/fused-ssim && pip install . --no-build-isolation"
     )
 
-    # 4. Remaining libraries
+    # 4. Remaining libraries (xformers removed - dinov2 uses standard attention)
     .pip_install(
         "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
         "lmdb==1.6.2", "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
@@ -64,10 +64,6 @@ guava_image = (
         "tyro==0.8.0", "onnxruntime-gpu==1.18", "onnx==1.16", "mediapipe==0.10.21",
         "transformers==4.37.0", "configer==1.3.1", "torchgeometry==0.1.2", "pynvml==13.0.1",
         "numpy==1.26.4", "colored", "librosa", "soundfile"
-    )
-    # Install xformers with correct CUDA version
-    .run_commands(
-        "pip install xformers==0.0.24 --index-url https://download.pytorch.org/whl/cu118"
     )
 
     # 5. Project Assets (copy=True allows build steps after)
