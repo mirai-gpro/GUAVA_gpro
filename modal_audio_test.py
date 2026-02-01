@@ -10,8 +10,8 @@ WAVファイルからアバターを動かすテスト
 import modal
 import os
 
-# === Modal Volume設定 (generate_ply_modal.pyと同一) ===
-ehm_volume = modal.Volume.from_name("ehm-tracker-output", create_if_missing=True)
+# === Modal Volume設定 (modal_final_clean.pyと同一) ===
+ehm_volume = modal.Volume.from_name("ehm-tracker-results", create_if_missing=True)
 audio_output_volume = modal.Volume.from_name("guava-audio-output", create_if_missing=True)
 
 # === Modal Image定義 (generate_ply_modal.pyと同一) ===
@@ -120,7 +120,7 @@ def audio_to_flame_params(audio_path: str, fps: int = 30):
     gpu="a10g",
     image=guava_image,
     volumes={
-        "/root/EHM_results": ehm_volume,
+        "/root/EHM-Tracker/output": ehm_volume,
         "/root/GUAVA/audio_outputs": audio_output_volume
     },
     timeout=1800,
@@ -160,9 +160,9 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str, data_path: str
 
     print(f"Audio file saved: {audio_path}")
 
-    # データパスの検出 (generate_ply_modal.pyと同一パターン)
+    # データパスの検出 (modal_final_clean.pyと同一パターン)
     if data_path is None:
-        search_path = "/root/EHM_results/processed_data"
+        search_path = "/root/EHM-Tracker/output/processed_data"
         if os.path.exists(search_path):
             subdirs = [d for d in os.listdir(search_path) if os.path.isdir(os.path.join(search_path, d))]
             if subdirs:
@@ -295,11 +295,11 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str, data_path: str
 
 @app.function(
     image=guava_image,
-    volumes={"/root/EHM_results": ehm_volume},
+    volumes={"/root/EHM-Tracker/output": ehm_volume},
     timeout=600,
 )
 def check_volume_structure():
-    """Volumeの内容を確認 (generate_ply_modal.pyと同一パターン)"""
+    """Volumeの内容を確認 (modal_final_clean.pyと同一パターン)"""
     import os
 
     result = {"structure": {}}
@@ -328,7 +328,7 @@ def check_volume_structure():
 
         return contents
 
-    result["structure"] = scan_dir("/root/EHM_results")
+    result["structure"] = scan_dir("/root/EHM-Tracker/output")
     return result
 
 
