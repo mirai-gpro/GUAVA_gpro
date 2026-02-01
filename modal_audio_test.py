@@ -38,6 +38,7 @@ guava_image = (
         "lmdb",
         "librosa",
         "soundfile",
+        "open3d",
     )
     .pip_install("gsplat==0.1.11")
     .pip_install("git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7")
