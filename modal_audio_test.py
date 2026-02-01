@@ -162,22 +162,32 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str, data_path: str
 
     # データパスの検出
     if data_path is None:
-        search_path = "/root/EHM_results/processed_data"
-        if os.path.exists(search_path):
-            subdirs = [d for d in os.listdir(search_path) if os.path.isdir(os.path.join(search_path, d))]
-            if subdirs:
-                data_path = os.path.join(search_path, subdirs[0])
-                print(f"自動検出されたデータパス: {data_path}")
-            else:
-                return {"error": f"トラッキングデータが見つかりません: {search_path}"}
-        else:
-            return {"error": f"EHM結果ディレクトリが見つかりません: {search_path}"}
+        # Volumeの実際の構造に合わせたパス
+        search_paths = [
+            "/root/EHM_results/example/tracked_video",
+            "/root/EHM_results/example/tracked_image",
+            "/root/EHM_results/processed_data",
+        ]
+        for search_path in search_paths:
+            if os.path.exists(search_path):
+                subdirs = [d for d in os.listdir(search_path) if os.path.isdir(os.path.join(search_path, d))]
+                if subdirs:
+                    data_path = os.path.join(search_path, subdirs[0])
+                    print(f"自動検出されたデータパス: {data_path}")
+                    break
+
+        if data_path is None:
+            return {"error": f"トラッキングデータが見つかりません。検索パス: {search_paths}"}
 
     print(f"\n=== GUAVA Audio Avatar Test ===")
     print(f"データパス: {data_path}")
 
-    # モデル設定
-    model_path = "assets/GUAVA"
+    # モデル設定 - Volumeからモデルを読み込む
+    model_path = "/root/EHM_results/GUAVA"
+    if not os.path.exists(model_path):
+        # フォールバック: ローカルのassetsを使用
+        model_path = "/root/GUAVA/assets/GUAVA"
+
     model_config_path = os.path.join(model_path, 'config.yaml')
 
     meta_cfg = ConfigDict(model_config_path=model_config_path)
