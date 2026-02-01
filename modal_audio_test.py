@@ -61,11 +61,11 @@ image = (
         "cd /root/GUAVA/submodules/fused-ssim && pip install . --no-build-isolation"
     )
 
-    # 4. Remaining libraries
+    # 4. Remaining libraries (xformers removed - incompatible with CUDA 11.8)
     .pip_install(
         "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
         "lmdb==1.6.2", "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
-        "rich==14.0.0", "opencv-python-headless", "xformers==0.0.24",
+        "rich==14.0.0", "opencv-python-headless",
         "tyro==0.8.0", "onnxruntime-gpu==1.18", "onnx==1.16", "mediapipe==0.10.21",
         "transformers==4.37.0", "configer==1.3.1", "torchgeometry==0.1.2", "pynvml==13.0.1",
         "numpy==1.26.4", "colored"
@@ -91,7 +91,10 @@ app = modal.App("guava-test")
         "/root/EHM-Tracker/output": output_volume,
         "/root/assets_volume": assets_volume,  # 正常なFLAME/SMPLXファイル
     },
-    env={"MEDIAPIPE_DISABLE_GPU": "1"}
+    env={
+        "MEDIAPIPE_DISABLE_GPU": "1",
+        "XFORMERS_DISABLED": "1",  # xformersを無効化してnative attentionを使用
+    }
 )
 def run_test(data_path: str = None, skip_self_act: bool = False):
     """
