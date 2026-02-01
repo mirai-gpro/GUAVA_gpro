@@ -17,8 +17,8 @@ GUAVA Test on Modal
 import modal
 import os
 
-# === Modal Volume設定 (modal_final_clean.pyと同一) ===
-output_volume = modal.Volume.from_name("ehm-tracker-results", create_if_missing=True)
+# === Modal Volume設定 (実際のデータがあるVolume) ===
+output_volume = modal.Volume.from_name("ehm-tracker-output", create_if_missing=True)
 
 # === Modal Image定義 (generate_ply_modal.pyと同一) ===
 image = (
