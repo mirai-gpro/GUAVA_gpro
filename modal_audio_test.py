@@ -17,8 +17,9 @@ GUAVA Test on Modal
 import modal
 import os
 
-# === Modal Volume設定 (実際のデータがあるVolume) ===
+# === Modal Volume設定 ===
 output_volume = modal.Volume.from_name("ehm-tracker-output", create_if_missing=True)
+assets_volume = modal.Volume.from_name("guava-weights")  # 正常なpklファイルがあるVolume
 
 # === Modal Image定義 (generate_ply_modal.pyと同一) ===
 image = (
@@ -86,7 +87,10 @@ app = modal.App("guava-test")
     image=image,
     gpu="a10g",
     timeout=3600,
-    volumes={"/root/EHM-Tracker/output": output_volume},
+    volumes={
+        "/root/EHM-Tracker/output": output_volume,
+        "/root/assets_volume": assets_volume,  # 正常なFLAME/SMPLXファイル
+    },
     env={"MEDIAPIPE_DISABLE_GPU": "1"}
 )
 def run_test(data_path: str = None, skip_self_act: bool = False):
@@ -122,6 +126,17 @@ def run_test(data_path: str = None, skip_self_act: bool = False):
             new_content = re.sub(r'[A-Z]:[\\/].*[\\/]assets', '/root/GUAVA/assets', content)
             with open(yaml_file, 'w') as f:
                 f.write(new_content)
+
+    # Volumeから正常なassetsをコピー（Windowsアップロードで壊れたpklを上書き）
+    import shutil
+    volume_assets = "/root/assets_volume"
+    local_assets = "/root/GUAVA/assets"
+    for subdir in ["FLAME", "SMPLX", "GUAVA"]:
+        src = os.path.join(volume_assets, subdir)
+        dst = os.path.join(local_assets, subdir)
+        if os.path.exists(src):
+            print(f"Copying {subdir} from Volume...")
+            shutil.copytree(src, dst, dirs_exist_ok=True)
 
     # データパスの検出 (modal_final_clean.pyと同一パターン)
     if data_path is None:
@@ -277,7 +292,10 @@ def run_test(data_path: str = None, skip_self_act: bool = False):
 
 @app.function(
     image=image,
-    volumes={"/root/EHM-Tracker/output": output_volume},
+    volumes={
+        "/root/EHM-Tracker/output": output_volume,
+        "/root/assets_volume": assets_volume,
+    },
     timeout=300,
 )
 def check_volume():
@@ -306,16 +324,10 @@ def check_volume():
             contents["ERROR"] = str(e)
         return contents
 
-    # Debug: show mount info
-    mount_info = subprocess.run(["mount"], capture_output=True, text=True).stdout
-    df_info = subprocess.run(["df", "-h"], capture_output=True, text=True).stdout
-
     result = {
-        "volume_mount_path": "/root/EHM-Tracker/output",
-        "path_exists": os.path.exists("/root/EHM-Tracker/output"),
-        "volume_root": scan_dir("/root/EHM-Tracker/output"),
-        "guava_assets": scan_dir("/root/GUAVA/assets", max_depth=2),
-        "df_info": df_info
+        "ehm_volume": scan_dir("/root/EHM-Tracker/output"),
+        "assets_volume": scan_dir("/root/assets_volume", max_depth=2),
+        "guava_assets_local": scan_dir("/root/GUAVA/assets", max_depth=2),
     }
     return result
 
