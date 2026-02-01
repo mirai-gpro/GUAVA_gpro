@@ -110,6 +110,11 @@ def run_test(data_path: str = None, skip_self_act: bool = False):
     os.chdir("/root/GUAVA")
     sys.path.insert(0, "/root/GUAVA")
 
+    # xformersを無効化（CUDA 11.8と互換性がないため）
+    # DINOv2がxformersを検出しても使用しないようにする
+    sys.modules['xformers'] = None
+    sys.modules['xformers.ops'] = None
+
     import torch
     import numpy as np
     import imageio
