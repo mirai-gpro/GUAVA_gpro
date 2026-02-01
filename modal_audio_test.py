@@ -14,14 +14,14 @@ import os
 GUAVA_REPO = "https://github.com/mirai-gpro/GUAVA_gpro.git"
 
 # Modal Image定義 - NVIDIA CUDA base image for CUDA extension compilation
-# Image version: v4 (use CUDA base image)
+# Image version: v5 (fix pip upgrade)
 guava_image = (
     modal.Image.from_registry(
         "nvidia/cuda:12.1.0-devel-ubuntu22.04",
         add_python="3.10"
     )
     .env({
-        "IMAGE_VERSION": "4",
+        "IMAGE_VERSION": "5",
         "CUDA_HOME": "/usr/local/cuda",
         "PATH": "/usr/local/cuda/bin:$PATH",
         "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:$LD_LIBRARY_PATH",
@@ -35,6 +35,8 @@ guava_image = (
         "build-essential",
         "ninja-build",
     )
+    # Upgrade pip first to avoid build issues
+    .run_commands("pip install --upgrade pip setuptools wheel")
     .pip_install(
         "torch==2.1.0",
         "torchvision==0.16.0",
