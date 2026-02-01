@@ -40,6 +40,16 @@ guava_image = (
         "soundfile",
         "open3d",
         "roma",
+        # Additional GUAVA dependencies
+        "plyfile",
+        "chumpy",
+        "easydict",
+        "kornia",
+        "transformers",
+        "configer",
+        "torchgeometry",
+        "colored",
+        "tyro",
     )
     .pip_install("gsplat==0.1.11")
     .pip_install("git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7")
