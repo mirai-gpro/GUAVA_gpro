@@ -192,6 +192,14 @@ def run_test(data_path: str = None, skip_self_act: bool = False):
     # meta_cfg['DATASET']は普通のdictなので直接代入
     meta_cfg['DATASET']['data_path'] = data_path
 
+    # デバッグ: パスと必要ファイルの存在確認
+    print(f"データパス: {data_path}")
+    pkl_path = os.path.join(data_path, 'optim_tracking_ehm.pkl')
+    print(f"PKLファイル: {pkl_path}")
+    print(f"PKLファイル存在: {os.path.exists(pkl_path)}")
+    if os.path.exists(data_path):
+        print(f"data_path内容: {os.listdir(data_path)}")
+
     test_dataset = TrackedData_infer(cfg=meta_cfg, split='test', device=device, test_full=True)
     print(f"データセット読み込み完了: {len(test_dataset)} サンプル")
 
