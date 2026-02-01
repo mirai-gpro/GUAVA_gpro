@@ -65,9 +65,9 @@ guava_image = (
         "transformers==4.37.0", "configer==1.3.1", "torchgeometry==0.1.2", "pynvml==13.0.1",
         "numpy==1.26.4", "colored", "librosa", "soundfile"
     )
-    # xformers for CUDA 11.8 + PyTorch 2.2.0 + Python 3.10
+    # xformers for CUDA 11.8
     .run_commands(
-        "pip install https://download.pytorch.org/whl/cu118/xformers-0.0.24-cp310-cp310-manylinux2014_x86_64.whl"
+        "pip install xformers==0.0.24+cu118 --index-url https://download.pytorch.org/whl/cu118 --extra-index-url https://pypi.org/simple"
     )
 
     # 5. Project Assets (copy=True allows build steps after)
