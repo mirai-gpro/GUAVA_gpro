@@ -188,8 +188,8 @@ def run_test(data_path: str = None, skip_self_act: bool = False):
     render_model.load_state_dict(_state['render_model'], strict=False)
     print(f"モデル読み込み完了: {base_model}")
 
-    # データセット設定 (test.pyと同一)
-    OmegaConf.set_readonly(meta_cfg['DATASET'], False)
+    # データセット設定
+    # meta_cfg['DATASET']は普通のdictなので直接代入
     meta_cfg['DATASET']['data_path'] = data_path
 
     test_dataset = TrackedData_infer(cfg=meta_cfg, split='test', device=device, test_full=True)
