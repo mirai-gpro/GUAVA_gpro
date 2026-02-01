@@ -13,18 +13,25 @@ import os
 # GitHub repo URL (公式GUAVAリポジトリ)
 GUAVA_REPO = "https://github.com/mirai-gpro/GUAVA_gpro.git"
 
-# Modal Image定義 - GitHubからコードを取得
-# Image version: v3 (build CUDA extensions)
+# Modal Image定義 - NVIDIA CUDA base image for CUDA extension compilation
+# Image version: v4 (use CUDA base image)
 guava_image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .env({"IMAGE_VERSION": "3"})  # Force rebuild
+    modal.Image.from_registry(
+        "nvidia/cuda:12.1.0-devel-ubuntu22.04",
+        add_python="3.10"
+    )
+    .env({
+        "IMAGE_VERSION": "4",
+        "CUDA_HOME": "/usr/local/cuda",
+        "PATH": "/usr/local/cuda/bin:$PATH",
+        "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:$LD_LIBRARY_PATH",
+    })
     .apt_install(
         "libgl1-mesa-glx",
         "libglib2.0-0",
         "git",
         "ffmpeg",
         "libsndfile1",
-        # CUDA build tools
         "build-essential",
         "ninja-build",
     )
@@ -65,10 +72,10 @@ guava_image = (
         "cd /root/guava && git checkout main || true",
         "cd /root/guava && git submodule update --init --recursive",
     )
-    # Build CUDA extensions
+    # Build CUDA extensions with GPU
     .run_commands(
         "cd /root/guava/submodules/diff-gaussian-rasterization-32 && pip install .",
-        gpu="T4",  # Use GPU for CUDA compilation
+        gpu="T4",
     )
 )
 
