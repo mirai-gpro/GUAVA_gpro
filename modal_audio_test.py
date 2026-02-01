@@ -16,13 +16,13 @@ import sys
 # === Modal Volume設定 ===
 weights_volume = modal.Volume.from_name("guava-weights", create_if_missing=True)
 
-# === Modal Image定義 (CUDA 12.1 + xformers互換) ===
+# === Modal Image定義 (generate_ply_modal.pyと同一) ===
 guava_image = (
-    modal.Image.from_registry("nvidia/cuda:12.1.0-devel-ubuntu22.04", add_python="3.10")
+    modal.Image.from_registry("nvidia/cuda:11.8.0-devel-ubuntu22.04", add_python="3.10")
     .apt_install(
         "git", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg", "wget",
         "libusb-1.0-0", "build-essential", "ninja-build",
-        "clang", "llvm", "libclang-dev", "libsndfile1"
+        "clang", "llvm", "libclang-dev"
     )
 
     # 1. Base dependencies
@@ -31,7 +31,7 @@ guava_image = (
         "pip install 'numpy<2.0'"
     )
     .run_commands(
-        "pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu121"
+        "pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu118"
     )
 
     # 2. Build Tools & Core Libraries
@@ -48,7 +48,7 @@ guava_image = (
         "pip install git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7 --no-build-isolation"
     )
 
-    # 3. Submodules Build (ローカルからコピー)
+    # 3. Submodules Build
     .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=True)
     .run_commands(
         "cd /root/GUAVA/submodules/diff-gaussian-rasterization-32 && pip install . --no-build-isolation",
@@ -56,26 +56,18 @@ guava_image = (
         "cd /root/GUAVA/submodules/fused-ssim && pip install . --no-build-isolation"
     )
 
-    # 4. Remaining libraries
+    # 4. Remaining libraries (generate_ply_modal.pyと同一 + librosa/soundfile)
     .pip_install(
         "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
         "lmdb==1.6.2", "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
-        "rich==14.0.0", "opencv-python-headless",
+        "rich==14.0.0", "opencv-python-headless", "xformers==0.0.24",
         "tyro==0.8.0", "onnxruntime-gpu==1.18", "onnx==1.16", "mediapipe==0.10.21",
         "transformers==4.37.0", "configer==1.3.1", "torchgeometry==0.1.2", "pynvml==13.0.1",
         "numpy==1.26.4", "colored", "librosa", "soundfile"
     )
-    # xformers (cu121互換)
-    .pip_install("xformers==0.0.24")
 
-    # 5. Project Assets (copy=True allows build steps after)
-    .add_local_dir("./assets", remote_path="/root/GUAVA/assets", copy=True)
-    # Fix corrupted pickle files from Windows
-    .run_commands(
-        "wget -q -O /root/GUAVA/assets/SMPLX/SMPLX_to_J14.pkl https://raw.githubusercontent.com/Pixel-Talk/GUAVA/main/assets/SMPLX/SMPLX_to_J14.pkl",
-        "wget -q -O /root/GUAVA/assets/FLAME/FLAME_masks/FLAME_masks.pkl https://raw.githubusercontent.com/Pixel-Talk/GUAVA/main/assets/FLAME/FLAME_masks/FLAME_masks.pkl"
-    )
-    # Other project files (no copy needed - these are last)
+    # 5. Project Assets
+    .add_local_dir("./assets", remote_path="/root/GUAVA/assets")
     .add_local_dir("./main", remote_path="/root/GUAVA/main")
     .add_local_dir("./models", remote_path="/root/GUAVA/models")
     .add_local_dir("./utils", remote_path="/root/GUAVA/utils")
