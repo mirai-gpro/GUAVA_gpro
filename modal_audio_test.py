@@ -230,10 +230,11 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str):
     meta_cfg = add_extra_cfgs(meta_cfg)
 
     # VolumeのアセットパスをConfigに設定（ローカルのpickleファイルが破損しているため）
-    OmegaConf.set_readonly(meta_cfg['MODEL'], False)
+    # ConfigDictは内部でOmegaConf(readonly)を使うので、dictを更新後に再作成
     meta_cfg['MODEL']['flame_assets_dir'] = '/assets/FLAME'
     meta_cfg['MODEL']['smplx_assets_dir'] = '/assets/SMPLX'
-    print(f"Using Volume assets: FLAME={meta_cfg['MODEL']['flame_assets_dir']}, SMPLX={meta_cfg['MODEL']['smplx_assets_dir']}")
+    meta_cfg._dot_config = OmegaConf.create(dict(meta_cfg))
+    print(f"Using Volume assets: FLAME={meta_cfg.MODEL.flame_assets_dir}, SMPLX={meta_cfg.MODEL.smplx_assets_dir}")
 
     lightning.fabric.seed_everything(10)
     device = 'cuda:0'
