@@ -10,7 +10,10 @@ WAVファイルからアバターを動かすテスト
 import modal
 import os
 
-# Modal Image定義
+# GitHub repo URL (公式GUAVAリポジトリ)
+GUAVA_REPO = "https://github.com/mirai-gpro/GUAVA_gpro.git"
+
+# Modal Image定義 - GitHubからコードを取得
 guava_image = (
     modal.Image.debian_slim(python_version="3.10")
     .apt_install(
@@ -38,6 +41,10 @@ guava_image = (
     )
     .pip_install("gsplat==0.1.11")
     .pip_install("git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7")
+    .run_commands(
+        f"git clone {GUAVA_REPO} /root/guava",
+        "cd /root/guava && git checkout main || true"
+    )
 )
 
 app = modal.App("guava-audio-test")
@@ -87,7 +94,6 @@ def audio_to_flame_params(audio_path: str, fps: int = 30):
     gpu="L4",
     image=guava_image,
     volumes={"/assets": weights_volume},
-    mounts=[modal.Mount.from_local_dir(".", remote_path="/root/guava")],
     timeout=1800,
 )
 def run_audio_avatar_test(audio_data: bytes, audio_filename: str):
@@ -284,10 +290,8 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str):
 
 
 @app.function(
-    gpu="L4",
     image=guava_image,
     volumes={"/assets": weights_volume},
-    mounts=[modal.Mount.from_local_dir(".", remote_path="/root/guava")],
     timeout=600,
 )
 def check_volume_structure():
