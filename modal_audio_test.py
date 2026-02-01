@@ -66,13 +66,13 @@ guava_image = (
         "numpy==1.26.4", "colored", "librosa", "soundfile"
     )
 
-    # 5. Project Assets (ローカルからコピー)
-    .add_local_dir("./assets", remote_path="/root/GUAVA/assets")
-    .add_local_dir("./main", remote_path="/root/GUAVA/main")
-    .add_local_dir("./models", remote_path="/root/GUAVA/models")
-    .add_local_dir("./utils", remote_path="/root/GUAVA/utils")
-    .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset")
-    .add_local_dir("./configs", remote_path="/root/GUAVA/configs")
+    # 5. Project Assets (ローカルからコピー, copy=True for build steps after)
+    .add_local_dir("./assets", remote_path="/root/GUAVA/assets", copy=True)
+    .add_local_dir("./main", remote_path="/root/GUAVA/main", copy=True)
+    .add_local_dir("./models", remote_path="/root/GUAVA/models", copy=True)
+    .add_local_dir("./utils", remote_path="/root/GUAVA/utils", copy=True)
+    .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset", copy=True)
+    .add_local_dir("./configs", remote_path="/root/GUAVA/configs", copy=True)
 
     # 6. Fix corrupted pickle files (download from official GUAVA repo)
     .run_commands(
