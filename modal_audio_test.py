@@ -282,6 +282,7 @@ def run_test(data_path: str = None, skip_self_act: bool = False):
 )
 def check_volume():
     """Volumeの内容を確認"""
+    import subprocess
 
     def scan_dir(path, depth=0, max_depth=3):
         if depth > max_depth:
@@ -305,9 +306,16 @@ def check_volume():
             contents["ERROR"] = str(e)
         return contents
 
+    # Debug: show mount info
+    mount_info = subprocess.run(["mount"], capture_output=True, text=True).stdout
+    df_info = subprocess.run(["df", "-h"], capture_output=True, text=True).stdout
+
     result = {
+        "volume_mount_path": "/root/EHM-Tracker/output",
+        "path_exists": os.path.exists("/root/EHM-Tracker/output"),
         "volume_root": scan_dir("/root/EHM-Tracker/output"),
-        "guava_assets": scan_dir("/root/GUAVA/assets", max_depth=2)
+        "guava_assets": scan_dir("/root/GUAVA/assets", max_depth=2),
+        "df_info": df_info
     }
     return result
 
