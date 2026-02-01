@@ -73,6 +73,12 @@ guava_image = (
     .add_local_dir("./utils", remote_path="/root/GUAVA/utils")
     .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset")
     .add_local_dir("./configs", remote_path="/root/GUAVA/configs")
+
+    # 6. Fix corrupted pickle files (download from official GUAVA repo)
+    .run_commands(
+        "wget -O /root/GUAVA/assets/SMPLX/SMPLX_to_J14.pkl https://raw.githubusercontent.com/Pixel-Talk/GUAVA/main/assets/SMPLX/SMPLX_to_J14.pkl",
+        "wget -O /root/GUAVA/assets/FLAME/FLAME_masks/FLAME_masks.pkl https://raw.githubusercontent.com/Pixel-Talk/GUAVA/main/assets/FLAME/FLAME_masks/FLAME_masks.pkl"
+    )
 )
 
 app = modal.App("guava-audio-test")
