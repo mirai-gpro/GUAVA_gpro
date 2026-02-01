@@ -16,9 +16,9 @@ import sys
 # === Modal Volume設定 ===
 weights_volume = modal.Volume.from_name("guava-weights", create_if_missing=True)
 
-# === Modal Image定義 (generate_ply_modal.pyベース) ===
+# === Modal Image定義 (CUDA 12.1 + xformers互換) ===
 guava_image = (
-    modal.Image.from_registry("nvidia/cuda:11.8.0-devel-ubuntu22.04", add_python="3.10")
+    modal.Image.from_registry("nvidia/cuda:12.1.0-devel-ubuntu22.04", add_python="3.10")
     .apt_install(
         "git", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg", "wget",
         "libusb-1.0-0", "build-essential", "ninja-build",
@@ -31,7 +31,7 @@ guava_image = (
         "pip install 'numpy<2.0'"
     )
     .run_commands(
-        "pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu118"
+        "pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu121"
     )
 
     # 2. Build Tools & Core Libraries
@@ -65,10 +65,8 @@ guava_image = (
         "transformers==4.37.0", "configer==1.3.1", "torchgeometry==0.1.2", "pynvml==13.0.1",
         "numpy==1.26.4", "colored", "librosa", "soundfile"
     )
-    # xformers for CUDA 11.8
-    .run_commands(
-        "pip install xformers==0.0.24+cu118 --index-url https://download.pytorch.org/whl/cu118 --extra-index-url https://pypi.org/simple"
-    )
+    # xformers (cu121互換)
+    .pip_install("xformers==0.0.24")
 
     # 5. Project Assets (copy=True allows build steps after)
     .add_local_dir("./assets", remote_path="/root/GUAVA/assets", copy=True)
