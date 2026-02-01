@@ -189,11 +189,17 @@ def run_test(data_path: str = None, skip_self_act: bool = False):
     print(f"モデル読み込み完了: {base_model}")
 
     # データセット設定
-    # meta_cfg['DATASET']は普通のdictなので直接代入
+    # ConfigDictは dict と _dot_config (OmegaConf) の両方を持つ
+    # データローダーは cfg.DATASET.data_path (ドットアクセス) を使うので両方更新
     meta_cfg['DATASET']['data_path'] = data_path
+    # _dot_configも更新
+    OmegaConf.set_readonly(meta_cfg._dot_config, False)
+    meta_cfg._dot_config.DATASET.data_path = data_path
+    OmegaConf.set_readonly(meta_cfg._dot_config, True)
 
     # デバッグ: パスと必要ファイルの存在確認
-    print(f"データパス: {data_path}")
+    print(f"データパス (dict): {meta_cfg['DATASET']['data_path']}")
+    print(f"データパス (OmegaConf): {meta_cfg._dot_config.DATASET.data_path}")
     pkl_path = os.path.join(data_path, 'optim_tracking_ehm.pkl')
     print(f"PKLファイル: {pkl_path}")
     print(f"PKLファイル存在: {os.path.exists(pkl_path)}")
