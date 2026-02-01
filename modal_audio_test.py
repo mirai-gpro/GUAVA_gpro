@@ -1,27 +1,32 @@
 """
-Modal Audio-Driven Avatar Test
-WAVファイルからアバターを動かすテスト
+GUAVA Test on Modal
+====================
+公式test.pyをModalで実行するラッパースクリプト
 
-使い方:
-1. ローカルにWAVファイルを配置
-2. modal run modal_audio_test.py --audio-path /path/to/test.wav
+使用方法:
+  # Volume内容確認
+  modal run modal_audio_test.py --check-only
+
+  # self-reenactmentテスト実行
+  modal run modal_audio_test.py
+
+  # データパス指定
+  modal run modal_audio_test.py --data-path /root/EHM-Tracker/output/processed_data/your_data
 """
 
 import modal
 import os
 
 # === Modal Volume設定 (modal_final_clean.pyと同一) ===
-ehm_volume = modal.Volume.from_name("ehm-tracker-results", create_if_missing=True)
-audio_output_volume = modal.Volume.from_name("guava-audio-output", create_if_missing=True)
+output_volume = modal.Volume.from_name("ehm-tracker-results", create_if_missing=True)
 
 # === Modal Image定義 (generate_ply_modal.pyと同一) ===
-guava_image = (
+image = (
     modal.Image.from_registry("nvidia/cuda:11.8.0-devel-ubuntu22.04", add_python="3.10")
     .apt_install(
         "git", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg", "wget",
         "libusb-1.0-0", "build-essential", "ninja-build",
-        "clang", "llvm", "libclang-dev",
-        "libsndfile1"
+        "clang", "llvm", "libclang-dev"
     )
 
     # 1. Base dependencies
@@ -62,9 +67,7 @@ guava_image = (
         "rich==14.0.0", "opencv-python-headless", "xformers==0.0.24",
         "tyro==0.8.0", "onnxruntime-gpu==1.18", "onnx==1.16", "mediapipe==0.10.21",
         "transformers==4.37.0", "configer==1.3.1", "torchgeometry==0.1.2", "pynvml==13.0.1",
-        "numpy==1.26.4", "colored",
-        # Audio processing
-        "librosa", "soundfile"
+        "numpy==1.26.4", "colored"
     )
 
     # 5. Project Assets
@@ -76,75 +79,42 @@ guava_image = (
     .add_local_dir("./configs", remote_path="/root/GUAVA/configs")
 )
 
-app = modal.App("guava-audio-test")
-
-
-def audio_to_flame_params(audio_path: str, fps: int = 30):
-    """
-    音声ファイルからFLAMEパラメータ（jaw_pose）を生成
-    シンプルな音量ベースのリップシンク
-    """
-    import librosa
-    import numpy as np
-
-    # 音声読み込み
-    y, sr = librosa.load(audio_path, sr=16000)
-    duration = len(y) / sr
-    num_frames = int(duration * fps)
-
-    # フレームごとの音量を計算
-    hop_length = int(sr / fps)
-    rms = librosa.feature.rms(y=y, hop_length=hop_length)[0]
-
-    # フレーム数に合わせてリサンプル
-    if len(rms) < num_frames:
-        rms = np.pad(rms, (0, num_frames - len(rms)), mode='constant')
-    else:
-        rms = rms[:num_frames]
-
-    # 正規化 (0-1)
-    rms_normalized = (rms - rms.min()) / (rms.max() - rms.min() + 1e-8)
-
-    # jaw_pose生成 (3次元: rotation around x, y, z)
-    # 口を開ける = x軸周りの回転
-    jaw_poses = []
-    for amp in rms_normalized:
-        jaw_open = amp * 0.4  # 最大0.4ラジアン
-        jaw_pose = np.array([jaw_open, 0.0, 0.0], dtype=np.float32)
-        jaw_poses.append(jaw_pose)
-
-    return jaw_poses, num_frames, fps
+app = modal.App("guava-test")
 
 
 @app.function(
+    image=image,
     gpu="a10g",
-    image=guava_image,
-    volumes={
-        "/root/EHM-Tracker/output": ehm_volume,
-        "/root/GUAVA/audio_outputs": audio_output_volume
-    },
-    timeout=1800,
+    timeout=3600,
+    volumes={"/root/EHM-Tracker/output": output_volume},
     env={"MEDIAPIPE_DISABLE_GPU": "1"}
 )
-def run_audio_avatar_test(audio_data: bytes, audio_filename: str, data_path: str = None):
+def run_test(data_path: str = None, skip_self_act: bool = False):
     """
-    音声データからアバターアニメーションを生成
+    公式test.pyのself-reenactmentテストを実行
     """
     import sys
+    import glob
+    import re
+    import copy
+    import json
+    import time
+
     os.chdir("/root/GUAVA")
     sys.path.insert(0, "/root/GUAVA")
 
     import torch
     import numpy as np
     import imageio
-    import copy
+    import lightning
     from tqdm import tqdm
     from omegaconf import OmegaConf
-    import lightning
-    import glob
-    import re
 
-    # YAMLファイルのパス修正
+    from dataset import TrackedData_infer
+    from models.UbodyAvatar import Ubody_Gaussian_inferer, Ubody_Gaussian, GaussianRenderer
+    from utils.general_utils import ConfigDict, find_pt_file, add_extra_cfgs, to8b
+
+    # YAMLファイルのパス修正 (generate_ply_modal.pyと同一)
     for yaml_file in glob.glob("assets/GUAVA/*.yaml"):
         with open(yaml_file, 'r') as f:
             content = f.read()
@@ -152,13 +122,6 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str, data_path: str
             new_content = re.sub(r'[A-Z]:[\\/].*[\\/]assets', '/root/GUAVA/assets', content)
             with open(yaml_file, 'w') as f:
                 f.write(new_content)
-
-    # 音声ファイルを一時保存
-    audio_path = f"/tmp/{audio_filename}"
-    with open(audio_path, "wb") as f:
-        f.write(audio_data)
-
-    print(f"Audio file saved: {audio_path}")
 
     # データパスの検出 (modal_final_clean.pyと同一パターン)
     if data_path is None:
@@ -173,20 +136,8 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str, data_path: str
         else:
             return {"error": f"EHM結果ディレクトリが見つかりません: {search_path}"}
 
-    print(f"=== GUAVA Audio Avatar Generator ===")
+    print(f"=== GUAVA Test (Self-Reenactment) ===")
     print(f"データパス: {data_path}")
-
-    # 音声からFLAMEパラメータ生成
-    print("\n=== Generating FLAME params from audio ===")
-    jaw_poses, num_frames, fps = audio_to_flame_params(audio_path)
-    print(f"Generated {num_frames} frames at {fps} FPS")
-
-    # GUAVAモデルをロード (generate_ply_modal.pyと同一パターン)
-    print("\n=== Loading GUAVA model ===")
-    from dataset import TrackedData_infer
-    from models.UbodyAvatar import Ubody_Gaussian_inferer, Ubody_Gaussian, GaussianRenderer
-    from utils.general_utils import ConfigDict, find_pt_file, add_extra_cfgs
-    from utils.general_utils import to8b
 
     # モデル設定 (generate_ply_modal.pyと同一)
     model_path = "assets/GUAVA"
@@ -198,7 +149,7 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str, data_path: str
     lightning.fabric.seed_everything(10)
     device = 'cuda:0'
 
-    # モデル読み込み (generate_ply_modal.pyと同一)
+    # モデル読み込み (test.pyと同一)
     print("モデルを読み込み中...")
     infer_model = Ubody_Gaussian_inferer(meta_cfg.MODEL)
     infer_model.to(device)
@@ -208,7 +159,7 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str, data_path: str
     render_model.to(device)
     render_model.eval()
 
-    # チェックポイント読み込み (generate_ply_modal.pyと同一)
+    # チェックポイント読み込み (test.pyと同一)
     ckpt_path = os.path.join(model_path, 'checkpoints')
     base_model = find_pt_file(ckpt_path, 'best')
     if base_model is None:
@@ -222,172 +173,183 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str, data_path: str
     render_model.load_state_dict(_state['render_model'], strict=False)
     print(f"モデル読み込み完了: {base_model}")
 
-    # データセット設定 (generate_ply_modal.pyと同一)
+    # データセット設定 (test.pyと同一)
     OmegaConf.set_readonly(meta_cfg['DATASET'], False)
     meta_cfg['DATASET']['data_path'] = data_path
 
-    print(f"\n=== Loading dataset from {data_path} ===")
     test_dataset = TrackedData_infer(cfg=meta_cfg, split='test', device=device, test_full=True)
+    print(f"データセット読み込み完了: {len(test_dataset)} サンプル")
 
-    # ソース情報をロード（アバターの外見）
-    video_ids = list(test_dataset.videos_info.keys())
-    if not video_ids:
-        return {"error": "No video IDs found in dataset"}
+    # 出力ディレクトリ
+    save_path = "/root/EHM-Tracker/output/test_results"
+    os.makedirs(save_path, exist_ok=True)
 
-    source_video_id = video_ids[0]
-    print(f"Source video ID: {source_video_id}")
-
-    source_info = test_dataset._load_source_info(source_video_id)
-
-    # アバター生成
-    print("\n=== Generating Avatar ===")
-    with torch.no_grad():
-        vertex_gs_dict, up_point_gs_dict, _ = infer_model(source_info)
-        ubody_gaussians = Ubody_Gaussian(meta_cfg.MODEL, vertex_gs_dict, up_point_gs_dict, pruning=True)
-        ubody_gaussians.init_ehm(infer_model.ehm)
-        ubody_gaussians.eval()
-
-    # ベースとなるターゲット情報を取得
-    frames_keys = test_dataset.videos_info[source_video_id]['frames_keys']
-    base_target_info = test_dataset._load_target_info(source_video_id, frames_keys[0])
-
-    # 音声に合わせてレンダリング
-    print("\n=== Rendering with audio ===")
-    rendering_imgs = []
+    results = []
     bg = 0.0
+    video_ids = list(test_dataset.videos_info.keys())
 
     with torch.no_grad():
-        for frame_idx in tqdm(range(min(num_frames, 300))):  # 最大300フレーム
-            # ターゲット情報をコピー
-            target_info = copy.deepcopy(base_target_info)
+        for vidx, video_id in enumerate(video_ids):
+            print(f'\n{video_id} [{vidx+1}/{len(video_ids)}]')
+            out_videoid_dir = os.path.join(save_path, video_id)
+            out_render_path = os.path.join(out_videoid_dir, 'render')
+            out_gt_path = os.path.join(out_videoid_dir, 'gt')
+            os.makedirs(out_render_path, exist_ok=True)
+            os.makedirs(out_gt_path, exist_ok=True)
 
-            # jaw_poseを更新（音声から生成したもの）
-            jaw_pose = torch.tensor(jaw_poses[frame_idx], dtype=torch.float32, device=device)
-            target_info['flame_coeffs']['jaw_pose'] = jaw_pose.unsqueeze(0)
+            speed_info = {}
+            source_info = test_dataset._load_source_info(video_id)
 
-            # レンダリング
+            # warmup
+            vertex_gs_dict, up_point_gs_dict, _ = infer_model(source_info)
+            start_time = time.time()
+            vertex_gs_dict, up_point_gs_dict, _ = infer_model(source_info)
+            infer_time = time.time() - start_time
+
+            ubody_gaussians = Ubody_Gaussian(meta_cfg.MODEL, vertex_gs_dict, up_point_gs_dict, pruning=True)
+            ubody_gaussians.init_ehm(infer_model.ehm)
+            ubody_gaussians.eval()
+
+            # PLY保存 (test.pyと同一)
+            ubody_gaussians.save_point_ply(out_videoid_dir)
+            ubody_gaussians.save_gaussian_ply(out_videoid_dir)
+
+            frames = test_dataset.videos_info[video_id]['frames_keys']
+            all_render_time = 0.0
+            test_num = test_dataset.testing_split[video_id]
+            rendering_imgs = []
+
+            # warmup render
+            target_info = test_dataset._load_target_info(video_id, frames[0])
             deform_gaussian_assets = ubody_gaussians(target_info)
             render_results = render_model(deform_gaussian_assets, target_info['render_cam_params'], bg=bg)
 
-            render_image = render_results['renders'][0]
-            rendering_imgs.append(to8b(render_image.detach().cpu().numpy()))
+            for idx, frame in tqdm(enumerate(frames[-test_num:])):
+                target_info = test_dataset._load_target_info(video_id, frame)
+                start_time = time.time()
+                deform_gaussian_assets = ubody_gaussians(target_info)
+                render_results = render_model(deform_gaussian_assets, target_info['render_cam_params'], bg=bg)
+                render_time = time.time() - start_time
+                all_render_time += render_time
 
-    # 動画保存
-    print("\n=== Saving video ===")
-    rendering_imgs = np.stack(rendering_imgs, 0).transpose(0, 2, 3, 1)
+                render_image = render_results['renders'][0]
+                gt_mask = target_info['mask'][0]
+                gt_image = target_info['image'][0] * gt_mask + (1 - gt_mask) * bg
 
-    output_path = "/tmp/audio_avatar_output.mp4"
-    imageio.mimwrite(output_path, rendering_imgs, fps=fps, quality=8)
+                import torchvision
+                torchvision.utils.save_image(gt_image, os.path.join(out_gt_path, '{0:05d}'.format(idx) + ".png"))
+                torchvision.utils.save_image(render_image, os.path.join(out_render_path, '{0:05d}'.format(idx) + ".png"))
 
-    # 動画をバイトで返す
-    with open(output_path, "rb") as f:
-        video_data = f.read()
+                cat_image = torch.cat([gt_image, render_image], dim=2)
+                rendering_imgs.append(to8b(cat_image.detach().cpu().numpy()))
+
+            rendering_imgs = np.stack(rendering_imgs, 0).transpose(0, 2, 3, 1)
+            imageio.mimwrite(os.path.join(out_videoid_dir, f'{video_id}_video.mp4'), rendering_imgs, fps=30, quality=8)
+
+            render_speed = test_num / all_render_time
+            speed_info['infer_time (ms)'] = infer_time * 1000
+            speed_info['render_speed (fps)'] = render_speed
+
+            with open(os.path.join(out_videoid_dir, 'speed_info.json'), 'w') as f:
+                json.dump(speed_info, f)
+
+            results.append({
+                'video_id': video_id,
+                'infer_time_ms': infer_time * 1000,
+                'render_fps': render_speed,
+                'test_frames': test_num
+            })
+
+            print(f"  Infer time: {infer_time*1000:.2f}ms")
+            print(f"  Render speed: {render_speed:.2f} fps")
 
     test_dataset._lmdb_engine.close()
 
+    # Volume commit
+    output_volume.commit()
+
     return {
         "success": True,
-        "num_frames": len(rendering_imgs),
-        "fps": fps,
-        "video_data": video_data,
+        "save_path": save_path,
+        "results": results
     }
 
 
 @app.function(
-    image=guava_image,
-    volumes={"/root/EHM-Tracker/output": ehm_volume},
-    timeout=600,
+    image=image,
+    volumes={"/root/EHM-Tracker/output": output_volume},
+    timeout=300,
 )
-def check_volume_structure():
-    """Volumeの内容を確認 (modal_final_clean.pyと同一パターン)"""
-    import os
-
-    result = {"structure": {}}
+def check_volume():
+    """Volumeの内容を確認"""
 
     def scan_dir(path, depth=0, max_depth=3):
         if depth > max_depth:
             return "..."
-
         if not os.path.exists(path):
             return "NOT EXISTS"
-
         if os.path.isfile(path):
             size = os.path.getsize(path)
             return f"FILE ({size} bytes)"
 
         contents = {}
         try:
-            items = os.listdir(path)[:20]  # 最大20項目
+            items = sorted(os.listdir(path))[:20]
             for item in items:
                 full_path = os.path.join(path, item)
                 contents[item] = scan_dir(full_path, depth + 1, max_depth)
-            if len(os.listdir(path)) > 20:
-                contents["..."] = f"and {len(os.listdir(path)) - 20} more items"
+            total = len(os.listdir(path))
+            if total > 20:
+                contents["..."] = f"and {total - 20} more items"
         except Exception as e:
             contents["ERROR"] = str(e)
-
         return contents
 
-    result["structure"] = scan_dir("/root/EHM-Tracker/output")
+    result = {
+        "volume_root": scan_dir("/root/EHM-Tracker/output"),
+        "guava_assets": scan_dir("/root/GUAVA/assets", max_depth=2)
+    }
     return result
 
 
 @app.local_entrypoint()
 def main(
-    audio_path: str = None,
+    data_path: str = None,
     check_only: bool = False,
 ):
     """
-    メインエントリーポイント
+    エントリーポイント
 
-    使い方:
-        # Volumeの内容を確認
+    使用例:
+        # Volume確認
         modal run modal_audio_test.py --check-only
 
-        # 音声ファイルでテスト
-        modal run modal_audio_test.py --audio-path ./test.wav
+        # テスト実行
+        modal run modal_audio_test.py
+
+        # データパス指定
+        modal run modal_audio_test.py --data-path /root/EHM-Tracker/output/processed_data/concierge
     """
     import json
 
     if check_only:
-        print("Checking volume structure...")
-        result = check_volume_structure.remote()
+        print("=== Volume Structure ===")
+        result = check_volume.remote()
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return
 
-    if audio_path is None:
-        print("Error: --audio-path is required")
-        print("Usage: modal run modal_audio_test.py --audio-path /path/to/test.wav")
-        return
-
-    if not os.path.exists(audio_path):
-        print(f"Error: Audio file not found: {audio_path}")
-        return
-
-    # 音声ファイルを読み込み
-    print(f"Loading audio file: {audio_path}")
-    with open(audio_path, "rb") as f:
-        audio_data = f.read()
-
-    audio_filename = os.path.basename(audio_path)
-
-    # Modalで実行
-    print("Running on Modal...")
-    result = run_audio_avatar_test.remote(audio_data, audio_filename)
+    print("=== Running GUAVA Test ===")
+    result = run_test.remote(data_path=data_path)
 
     if "error" in result:
         print(f"Error: {result['error']}")
         return
 
     if result.get("success"):
-        # 動画を保存
-        output_path = f"./output_avatar_{audio_filename.replace('.wav', '.mp4')}"
-        with open(output_path, "wb") as f:
-            f.write(result["video_data"])
-
-        print(f"\nSuccess!")
-        print(f"  Frames: {result['num_frames']}")
-        print(f"  FPS: {result['fps']}")
-        print(f"  Output: {output_path}")
-    else:
-        print(f"Result: {result}")
+        print(f"\n=== Test Complete ===")
+        print(f"Save path: {result['save_path']}")
+        for r in result['results']:
+            print(f"\n  {r['video_id']}:")
+            print(f"    Infer time: {r['infer_time_ms']:.2f}ms")
+            print(f"    Render speed: {r['render_fps']:.2f} fps")
+            print(f"    Test frames: {r['test_frames']}")
