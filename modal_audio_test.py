@@ -66,8 +66,14 @@ guava_image = (
         "numpy==1.26.4", "colored", "librosa", "soundfile"
     )
 
-    # 5. Project Assets (ローカルからコピー - add_local_dir must be last)
-    .add_local_dir("./assets", remote_path="/root/GUAVA/assets")
+    # 5. Project Assets (copy=True allows build steps after)
+    .add_local_dir("./assets", remote_path="/root/GUAVA/assets", copy=True)
+    # Fix corrupted pickle files from Windows
+    .run_commands(
+        "wget -q -O /root/GUAVA/assets/SMPLX/SMPLX_to_J14.pkl https://raw.githubusercontent.com/Pixel-Talk/GUAVA/main/assets/SMPLX/SMPLX_to_J14.pkl",
+        "wget -q -O /root/GUAVA/assets/FLAME/FLAME_masks/FLAME_masks.pkl https://raw.githubusercontent.com/Pixel-Talk/GUAVA/main/assets/FLAME/FLAME_masks/FLAME_masks.pkl"
+    )
+    # Other project files (no copy needed - these are last)
     .add_local_dir("./main", remote_path="/root/GUAVA/main")
     .add_local_dir("./models", remote_path="/root/GUAVA/models")
     .add_local_dir("./utils", remote_path="/root/GUAVA/utils")
