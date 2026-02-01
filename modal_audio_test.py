@@ -361,6 +361,57 @@ def check_volume():
     },
     timeout=300,
 )
+def inspect_pkl_structure():
+    """optim_tracking_ehm.pklの構造を確認"""
+    import pickle
+
+    pkl_path = "/root/EHM-Tracker/output/processed_data/driving/optim_tracking_ehm.pkl"
+    if not os.path.exists(pkl_path):
+        # 検索
+        search_path = "/root/EHM-Tracker/output/processed_data"
+        for root, dirs, files in os.walk(search_path):
+            if "optim_tracking_ehm.pkl" in files:
+                pkl_path = os.path.join(root, "optim_tracking_ehm.pkl")
+                break
+
+    if not os.path.exists(pkl_path):
+        return {"error": f"pkl not found"}
+
+    with open(pkl_path, 'rb') as f:
+        data = pickle.load(f)
+
+    def get_structure(obj, depth=0, max_depth=4):
+        if depth > max_depth:
+            return "..."
+        if isinstance(obj, dict):
+            result = {}
+            for k, v in list(obj.items())[:5]:  # 最初の5キーのみ
+                result[str(k)] = get_structure(v, depth + 1, max_depth)
+            if len(obj) > 5:
+                result["..."] = f"and {len(obj) - 5} more keys"
+            return result
+        elif hasattr(obj, 'shape'):
+            return f"array shape={obj.shape} dtype={obj.dtype}"
+        elif isinstance(obj, (list, tuple)):
+            if len(obj) > 0:
+                return f"list[{len(obj)}] first={get_structure(obj[0], depth + 1, max_depth)}"
+            return "empty list"
+        else:
+            return f"{type(obj).__name__}: {str(obj)[:50]}"
+
+    return {
+        "pkl_path": pkl_path,
+        "structure": get_structure(data)
+    }
+
+
+@app.function(
+    image=image,
+    volumes={
+        "/root/EHM-Tracker/output": output_volume,
+    },
+    timeout=300,
+)
 def download_results():
     """テスト結果をダウンロード用に取得"""
     import base64
@@ -452,6 +503,7 @@ def main(
     check_only: bool = False,
     download: bool = False,
     get_video: bool = False,
+    inspect_pkl: bool = False,
 ):
     """
     エントリーポイント
@@ -459,6 +511,9 @@ def main(
     使用例:
         # Volume確認
         modal run modal_audio_test.py --check-only
+
+        # PKL構造確認
+        modal run modal_audio_test.py --inspect-pkl
 
         # テスト実行
         modal run modal_audio_test.py
@@ -478,6 +533,12 @@ def main(
     if check_only:
         print("=== Volume Structure ===")
         result = check_volume.remote()
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+
+    if inspect_pkl:
+        print("=== PKL Structure ===")
+        result = inspect_pkl_structure.remote()
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return
 
