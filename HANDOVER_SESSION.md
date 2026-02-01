@@ -38,9 +38,16 @@
 - PKL構造確認機能を追加（`--inspect-pkl`オプション）
 
 #### 未完了のタスク
-- **音声駆動テスト（test.wavを使用）**
+- **音声駆動リップシンクテスト（test.wavを使用）**
   - ユーザーのtest.wavファイル: `C:\Users\hamad\GUAVA_gpro\test_audio\test.wav`
-  - 論文通りの方法で実装する必要がある
+
+  **実装すべきこと:**
+  1. test.wav（音声）を入力として受け取る
+  2. 音声から `flame_coeffs.expression_params` [50次元] と `flame_coeffs.jaw_pose` を生成
+  3. コンシェルジュのidentity（shape）と組み合わせる
+  4. GUAVAでレンダリング
+
+  **注意:** 前のClaudeは「音声駆動は論文に含まれていない」「別モデルが必要」と言ったが、これは間違い。リップシンクテストには音声ファイルが必要。
 
 ### 論文から理解すべきこと（Sec 3.1, 3.3）
 
