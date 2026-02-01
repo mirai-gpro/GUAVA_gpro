@@ -10,8 +10,9 @@ WAVファイルからアバターを動かすテスト
 import modal
 import os
 
-# === Modal Volume設定 ===
-weights_volume = modal.Volume.from_name("guava-weights", create_if_missing=False)
+# === Modal Volume設定 (generate_ply_modal.pyと同一) ===
+ehm_volume = modal.Volume.from_name("ehm-tracker-output", create_if_missing=True)
+audio_output_volume = modal.Volume.from_name("guava-audio-output", create_if_missing=True)
 
 # === Modal Image定義 (generate_ply_modal.pyと同一) ===
 guava_image = (
@@ -116,13 +117,16 @@ def audio_to_flame_params(audio_path: str, fps: int = 30):
 
 
 @app.function(
-    gpu="L4",
+    gpu="a10g",
     image=guava_image,
-    volumes={"/assets": weights_volume},
+    volumes={
+        "/root/EHM_results": ehm_volume,
+        "/root/GUAVA/audio_outputs": audio_output_volume
+    },
     timeout=1800,
     env={"MEDIAPIPE_DISABLE_GPU": "1"}
 )
-def run_audio_avatar_test(audio_data: bytes, audio_filename: str):
+def run_audio_avatar_test(audio_data: bytes, audio_filename: str, data_path: str = None):
     """
     音声データからアバターアニメーションを生成
     """
@@ -156,116 +160,73 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str):
 
     print(f"Audio file saved: {audio_path}")
 
-    # Volumeの内容を確認
-    print("\n=== Checking Volume Contents ===")
-    assets_path = "/assets"
-    if os.path.exists(assets_path):
-        for item in os.listdir(assets_path):
-            print(f"  {item}")
-            sub_path = os.path.join(assets_path, item)
-            if os.path.isdir(sub_path):
-                for sub_item in os.listdir(sub_path)[:5]:
-                    print(f"    {sub_item}")
-
-    # モデルパスとデータパスを確認
-    model_path = "/assets/assets/GUAVA"
-    data_base = "/assets/assets/example/tracked_video"
-
-    if not os.path.exists(model_path):
-        # 別のパス構造を試す
-        if os.path.exists("/assets/GUAVA"):
-            model_path = "/assets/GUAVA"
-        else:
-            return {"error": f"Model not found. Checked: {model_path}"}
-
-    print(f"\nModel path: {model_path}")
-    print(f"Model contents: {os.listdir(model_path)}")
-
-    # データパスを探す
-    data_path = None
-    possible_data_paths = [
-        "/assets/assets/example/tracked_video",
-        "/assets/example/tracked_video",
-        "/assets/tracked_video",
-    ]
-
-    for p in possible_data_paths:
-        if os.path.exists(p):
-            data_path = p
-            break
-
+    # データパスの検出 (generate_ply_modal.pyと同一パターン)
     if data_path is None:
-        return {"error": "Tracked video data not found"}
+        search_path = "/root/EHM_results/processed_data"
+        if os.path.exists(search_path):
+            subdirs = [d for d in os.listdir(search_path) if os.path.isdir(os.path.join(search_path, d))]
+            if subdirs:
+                data_path = os.path.join(search_path, subdirs[0])
+                print(f"自動検出されたデータパス: {data_path}")
+            else:
+                return {"error": f"トラッキングデータが見つかりません: {search_path}"}
+        else:
+            return {"error": f"EHM結果ディレクトリが見つかりません: {search_path}"}
 
-    print(f"\nData path: {data_path}")
-    print(f"Available videos: {os.listdir(data_path)}")
-
-    # 最初のビデオを使用
-    video_dirs = [d for d in os.listdir(data_path) if os.path.isdir(os.path.join(data_path, d))]
-    if not video_dirs:
-        return {"error": "No video directories found"}
-
-    video_id = video_dirs[0]
-    video_data_path = os.path.join(data_path, video_id)
-    print(f"\nUsing video: {video_id}")
+    print(f"=== GUAVA Audio Avatar Generator ===")
+    print(f"データパス: {data_path}")
 
     # 音声からFLAMEパラメータ生成
     print("\n=== Generating FLAME params from audio ===")
     jaw_poses, num_frames, fps = audio_to_flame_params(audio_path)
     print(f"Generated {num_frames} frames at {fps} FPS")
 
-    # GUAVAモデルをロード
+    # GUAVAモデルをロード (generate_ply_modal.pyと同一パターン)
     print("\n=== Loading GUAVA model ===")
     from dataset import TrackedData_infer
     from models.UbodyAvatar import Ubody_Gaussian_inferer, Ubody_Gaussian, GaussianRenderer
     from utils.general_utils import ConfigDict, find_pt_file, add_extra_cfgs
     from utils.general_utils import to8b
 
-    # Config
+    # モデル設定 (generate_ply_modal.pyと同一)
+    model_path = "assets/GUAVA"
     model_config_path = os.path.join(model_path, 'config.yaml')
-    if not os.path.exists(model_config_path):
-        model_config_path = 'configs/train/ubody_512.yaml'
 
     meta_cfg = ConfigDict(model_config_path=model_config_path)
     meta_cfg = add_extra_cfgs(meta_cfg)
 
-    # VolumeのアセットパスをConfigに設定（ローカルのpickleファイルが破損しているため）
-    # ConfigDictは内部でOmegaConf(readonly)を使うので、dictを更新後に再作成
-    meta_cfg['MODEL']['flame_assets_dir'] = '/assets/FLAME'
-    meta_cfg['MODEL']['smplx_assets_dir'] = '/assets/SMPLX'
-    meta_cfg._dot_config = OmegaConf.create(dict(meta_cfg))
-    print(f"Using Volume assets: FLAME={meta_cfg.MODEL.flame_assets_dir}, SMPLX={meta_cfg.MODEL.smplx_assets_dir}")
-
     lightning.fabric.seed_everything(10)
     device = 'cuda:0'
 
-    # モデル初期化
+    # モデル読み込み (generate_ply_modal.pyと同一)
+    print("モデルを読み込み中...")
     infer_model = Ubody_Gaussian_inferer(meta_cfg.MODEL)
     infer_model.to(device)
+    infer_model.eval()
+
     render_model = GaussianRenderer(meta_cfg.MODEL)
     render_model.to(device)
-    infer_model.eval()
     render_model.eval()
 
-    # チェックポイントをロード
+    # チェックポイント読み込み (generate_ply_modal.pyと同一)
     ckpt_path = os.path.join(model_path, 'checkpoints')
     base_model = find_pt_file(ckpt_path, 'best')
     if base_model is None:
         base_model = find_pt_file(ckpt_path, 'latest')
 
-    if base_model is None:
-        return {"error": f"No checkpoint found in {ckpt_path}"}
+    if base_model is None or not os.path.exists(base_model):
+        return {"error": f"モデルチェックポイントが見つかりません: {ckpt_path}"}
 
-    print(f"Loading checkpoint: {base_model}")
     _state = torch.load(base_model, map_location='cpu', weights_only=True)
     infer_model.load_state_dict(_state['model'], strict=False)
     render_model.load_state_dict(_state['render_model'], strict=False)
+    print(f"モデル読み込み完了: {base_model}")
 
-    # データセットをロード
+    # データセット設定 (generate_ply_modal.pyと同一)
     OmegaConf.set_readonly(meta_cfg['DATASET'], False)
-    meta_cfg['DATASET']['data_path'] = video_data_path
+    meta_cfg['DATASET']['data_path'] = data_path
 
-    print(f"\n=== Loading dataset from {video_data_path} ===")
+    print(f"\n=== Loading dataset from {data_path} ===")
     test_dataset = TrackedData_infer(cfg=meta_cfg, split='test', device=device, test_full=True)
 
     # ソース情報をロード（アバターの外見）
@@ -334,11 +295,11 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str):
 
 @app.function(
     image=guava_image,
-    volumes={"/assets": weights_volume},
+    volumes={"/root/EHM_results": ehm_volume},
     timeout=600,
 )
 def check_volume_structure():
-    """Volumeの内容を確認"""
+    """Volumeの内容を確認 (generate_ply_modal.pyと同一パターン)"""
     import os
 
     result = {"structure": {}}
@@ -367,7 +328,7 @@ def check_volume_structure():
 
         return contents
 
-    result["structure"] = scan_dir("/assets")
+    result["structure"] = scan_dir("/root/EHM_results")
     return result
 
 
