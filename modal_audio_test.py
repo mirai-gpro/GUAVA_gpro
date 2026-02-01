@@ -354,10 +354,104 @@ def check_volume():
     return result
 
 
+@app.function(
+    image=image,
+    volumes={
+        "/root/EHM-Tracker/output": output_volume,
+    },
+    timeout=300,
+)
+def download_results():
+    """テスト結果をダウンロード用に取得"""
+    import base64
+    results_path = "/root/EHM-Tracker/output/test_results"
+
+    if not os.path.exists(results_path):
+        return {"error": f"結果が見つかりません: {results_path}"}
+
+    files = {}
+    for root, dirs, filenames in os.walk(results_path):
+        for filename in filenames:
+            if filename.endswith(('.mp4', '.json', '.png', '.ply')):
+                full_path = os.path.join(root, filename)
+                rel_path = os.path.relpath(full_path, results_path)
+
+                # 動画とPLYはパスのみ（大きいので）
+                if filename.endswith(('.mp4', '.ply')):
+                    files[rel_path] = {
+                        "type": "large_file",
+                        "size": os.path.getsize(full_path),
+                        "path": full_path
+                    }
+                # JSONは内容を含める
+                elif filename.endswith('.json'):
+                    with open(full_path, 'r') as f:
+                        files[rel_path] = {
+                            "type": "json",
+                            "content": f.read()
+                        }
+                # 最初の数枚のPNGのみBase64エンコード
+                elif filename.endswith('.png') and '00000' in filename:
+                    with open(full_path, 'rb') as f:
+                        files[rel_path] = {
+                            "type": "image",
+                            "content": base64.b64encode(f.read()).decode('utf-8')
+                        }
+
+    return {
+        "success": True,
+        "files": files,
+        "results_path": results_path
+    }
+
+
+@app.function(
+    image=image,
+    volumes={
+        "/root/EHM-Tracker/output": output_volume,
+    },
+    timeout=600,
+)
+def get_video_bytes(video_name: str = None):
+    """動画ファイルのバイナリを取得"""
+    import base64
+    results_path = "/root/EHM-Tracker/output/test_results"
+
+    # 動画ファイルを検索
+    videos = []
+    for root, dirs, filenames in os.walk(results_path):
+        for filename in filenames:
+            if filename.endswith('.mp4'):
+                videos.append(os.path.join(root, filename))
+
+    if not videos:
+        return {"error": "動画ファイルが見つかりません"}
+
+    # 最初の動画または指定された動画を取得
+    video_path = videos[0]
+    if video_name:
+        for v in videos:
+            if video_name in v:
+                video_path = v
+                break
+
+    with open(video_path, 'rb') as f:
+        video_data = f.read()
+
+    return {
+        "success": True,
+        "path": video_path,
+        "size": len(video_data),
+        "data": base64.b64encode(video_data).decode('utf-8')
+    }
+
+
 @app.local_entrypoint()
 def main(
     data_path: str = None,
     check_only: bool = False,
+    download: bool = False,
+    get_video: bool = False,
 ):
     """
     エントリーポイント
@@ -371,13 +465,61 @@ def main(
 
         # データパス指定
         modal run modal_audio_test.py --data-path /root/EHM-Tracker/output/processed_data/concierge
+
+        # 結果ダウンロード
+        modal run modal_audio_test.py --download
+
+        # 動画ダウンロード
+        modal run modal_audio_test.py --get-video
     """
     import json
+    import base64
 
     if check_only:
         print("=== Volume Structure ===")
         result = check_volume.remote()
         print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+
+    if download:
+        print("=== Downloading Results ===")
+        result = download_results.remote()
+        if "error" in result:
+            print(f"Error: {result['error']}")
+            return
+
+        print(f"結果パス: {result['results_path']}")
+        print(f"\n見つかったファイル:")
+        for path, info in result['files'].items():
+            if info['type'] == 'large_file':
+                print(f"  {path}: {info['size'] / 1024:.1f} KB")
+            elif info['type'] == 'json':
+                print(f"  {path}: {info['content']}")
+            elif info['type'] == 'image':
+                # 画像をローカルに保存
+                import os
+                local_path = os.path.join('test_results', path)
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                with open(local_path, 'wb') as f:
+                    f.write(base64.b64decode(info['content']))
+                print(f"  {path}: 保存完了 -> {local_path}")
+        return
+
+    if get_video:
+        print("=== Downloading Video ===")
+        result = get_video_bytes.remote()
+        if "error" in result:
+            print(f"Error: {result['error']}")
+            return
+
+        # 動画をローカルに保存
+        import os
+        video_filename = os.path.basename(result['path'])
+        local_path = os.path.join('test_results', video_filename)
+        os.makedirs('test_results', exist_ok=True)
+        with open(local_path, 'wb') as f:
+            f.write(base64.b64decode(result['data']))
+        print(f"動画保存完了: {local_path} ({result['size'] / 1024:.1f} KB)")
         return
 
     print("=== Running GUAVA Test ===")
