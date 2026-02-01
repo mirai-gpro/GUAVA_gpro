@@ -66,19 +66,13 @@ guava_image = (
         "numpy==1.26.4", "colored", "librosa", "soundfile"
     )
 
-    # 5. Project Assets (ローカルからコピー, copy=True for build steps after)
-    .add_local_dir("./assets", remote_path="/root/GUAVA/assets", copy=True)
-    .add_local_dir("./main", remote_path="/root/GUAVA/main", copy=True)
-    .add_local_dir("./models", remote_path="/root/GUAVA/models", copy=True)
-    .add_local_dir("./utils", remote_path="/root/GUAVA/utils", copy=True)
-    .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset", copy=True)
-    .add_local_dir("./configs", remote_path="/root/GUAVA/configs", copy=True)
-
-    # 6. Fix corrupted pickle files (download from official GUAVA repo)
-    .run_commands(
-        "wget -O /root/GUAVA/assets/SMPLX/SMPLX_to_J14.pkl https://raw.githubusercontent.com/Pixel-Talk/GUAVA/main/assets/SMPLX/SMPLX_to_J14.pkl",
-        "wget -O /root/GUAVA/assets/FLAME/FLAME_masks/FLAME_masks.pkl https://raw.githubusercontent.com/Pixel-Talk/GUAVA/main/assets/FLAME/FLAME_masks/FLAME_masks.pkl"
-    )
+    # 5. Project Assets (ローカルからコピー - add_local_dir must be last)
+    .add_local_dir("./assets", remote_path="/root/GUAVA/assets")
+    .add_local_dir("./main", remote_path="/root/GUAVA/main")
+    .add_local_dir("./models", remote_path="/root/GUAVA/models")
+    .add_local_dir("./utils", remote_path="/root/GUAVA/utils")
+    .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset")
+    .add_local_dir("./configs", remote_path="/root/GUAVA/configs")
 )
 
 app = modal.App("guava-audio-test")
@@ -135,9 +129,22 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str, data_path: str
     import glob
     import re
     import copy
+    import subprocess
 
     os.chdir("/root/GUAVA")
     sys.path.insert(0, "/root/GUAVA")
+
+    # Fix corrupted pickle files by downloading from official GUAVA repo
+    print("Downloading correct pickle files from official GUAVA repo...")
+    subprocess.run([
+        "wget", "-q", "-O", "/root/GUAVA/assets/SMPLX/SMPLX_to_J14.pkl",
+        "https://raw.githubusercontent.com/Pixel-Talk/GUAVA/main/assets/SMPLX/SMPLX_to_J14.pkl"
+    ], check=True)
+    subprocess.run([
+        "wget", "-q", "-O", "/root/GUAVA/assets/FLAME/FLAME_masks/FLAME_masks.pkl",
+        "https://raw.githubusercontent.com/Pixel-Talk/GUAVA/main/assets/FLAME/FLAME_masks/FLAME_masks.pkl"
+    ], check=True)
+    print("Pickle files downloaded successfully.")
 
     import torch
     import numpy as np
