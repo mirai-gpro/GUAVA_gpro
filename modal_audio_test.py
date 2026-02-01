@@ -14,16 +14,19 @@ import os
 GUAVA_REPO = "https://github.com/mirai-gpro/GUAVA_gpro.git"
 
 # Modal Image定義 - GitHubからコードを取得
-# Image version: v2 (force rebuild with all dependencies)
+# Image version: v3 (build CUDA extensions)
 guava_image = (
     modal.Image.debian_slim(python_version="3.10")
-    .env({"IMAGE_VERSION": "2"})  # Force rebuild
+    .env({"IMAGE_VERSION": "3"})  # Force rebuild
     .apt_install(
         "libgl1-mesa-glx",
         "libglib2.0-0",
         "git",
         "ffmpeg",
-        "libsndfile1"
+        "libsndfile1",
+        # CUDA build tools
+        "build-essential",
+        "ninja-build",
     )
     .pip_install(
         "torch==2.1.0",
@@ -52,12 +55,20 @@ guava_image = (
         "torchgeometry",
         "colored",
         "tyro",
+        "ninja",
     )
     .pip_install("gsplat==0.1.11")
     .pip_install("git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7")
     .run_commands(
-        f"git clone {GUAVA_REPO} /root/guava",
-        "cd /root/guava && git checkout main || true"
+        # Clone with submodules
+        f"git clone --recursive {GUAVA_REPO} /root/guava",
+        "cd /root/guava && git checkout main || true",
+        "cd /root/guava && git submodule update --init --recursive",
+    )
+    # Build CUDA extensions
+    .run_commands(
+        "cd /root/guava/submodules/diff-gaussian-rasterization-32 && pip install .",
+        gpu="T4",  # Use GPU for CUDA compilation
     )
 )
 
