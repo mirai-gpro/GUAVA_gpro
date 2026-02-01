@@ -15,10 +15,15 @@
 - **スマホ単体での動作**が必須
 
 ### 2. 現時点でのテスト目標
-- 論文公式GitHub提供の`test.py`を動かして検証
-- **元画像、参考動画**: コンシェルジュ用に既に論文に従って準備済み
-- **学習済みデータ**: onnx, bin, PLYファイルは生成済み
+- **論文公式GitHub提供の `main/test.py` を動かして検証**
+- 元画像、参考動画: コンシェルジュ用に既に論文に従って準備済み
+- 学習済みデータ: onnx, bin, PLYファイルは生成済み（Modal Volume `guava-weights` に保存）
 - **テスト音声**: `C:\Users\hamad\GUAVA_gpro\test_audio\test.wav`
+
+### 重要: テスト対象ファイル
+- **使うべき**: `main/test.py`（論文公式）
+- **参考にすべき**: `generate_ply_modal.py`（Modal環境で動作確認済み）
+- **問題のあるファイル**: `modal_audio_test.py`（前回Claudeが壊した）
 
 ---
 
