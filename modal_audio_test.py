@@ -129,22 +129,9 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str, data_path: str
     import glob
     import re
     import copy
-    import subprocess
 
     os.chdir("/root/GUAVA")
     sys.path.insert(0, "/root/GUAVA")
-
-    # Fix corrupted pickle files by downloading from official GUAVA repo
-    print("Downloading correct pickle files from official GUAVA repo...")
-    subprocess.run([
-        "wget", "-q", "-O", "/root/GUAVA/assets/SMPLX/SMPLX_to_J14.pkl",
-        "https://raw.githubusercontent.com/Pixel-Talk/GUAVA/main/assets/SMPLX/SMPLX_to_J14.pkl"
-    ], check=True)
-    subprocess.run([
-        "wget", "-q", "-O", "/root/GUAVA/assets/FLAME/FLAME_masks/FLAME_masks.pkl",
-        "https://raw.githubusercontent.com/Pixel-Talk/GUAVA/main/assets/FLAME/FLAME_masks/FLAME_masks.pkl"
-    ], check=True)
-    print("Pickle files downloaded successfully.")
 
     import torch
     import numpy as np
