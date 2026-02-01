@@ -221,12 +221,8 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str, data_path: str
     print(f"モデル読み込み完了: {base_model}")
 
     # データセット設定
-    if hasattr(meta_cfg, 'DATASET'):
-        if hasattr(meta_cfg.DATASET, '_set_flag'):
-            OmegaConf.set_readonly(meta_cfg.DATASET, False)
-        meta_cfg.DATASET.data_path = data_path
-    else:
-        meta_cfg['DATASET']['data_path'] = data_path
+    OmegaConf.set_readonly(meta_cfg['DATASET'], False)
+    meta_cfg['DATASET']['data_path'] = data_path
 
     test_dataset = TrackedData_infer(cfg=meta_cfg, split='test', device=device, test_full=True)
     print(f"データセット読み込み完了: {len(test_dataset)} サンプル")
