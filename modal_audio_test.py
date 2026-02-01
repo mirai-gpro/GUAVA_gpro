@@ -262,8 +262,8 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str):
     render_model.load_state_dict(_state['render_model'], strict=False)
 
     # データセットをロード
-    OmegaConf.set_readonly(meta_cfg['DATASET'], False)
     meta_cfg['DATASET']['data_path'] = video_data_path
+    meta_cfg._dot_config = OmegaConf.create(dict(meta_cfg))
 
     print(f"\n=== Loading dataset from {video_data_path} ===")
     test_dataset = TrackedData_infer(cfg=meta_cfg, split='test', device=device, test_full=True)
