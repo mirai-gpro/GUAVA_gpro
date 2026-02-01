@@ -25,8 +25,8 @@ guava_image = (
     )
     .pip_install(
         "torch==2.1.0",
-        "torchvision",
-        "numpy",
+        "torchvision==0.16.0",
+        "numpy<2",
         "scipy",
         "opencv-python",
         "h5py",
@@ -38,6 +38,8 @@ guava_image = (
         "lmdb",
         "librosa",
         "soundfile",
+        "open3d",
+        "roma",
     )
     .pip_install("gsplat==0.1.11")
     .pip_install("git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7")
