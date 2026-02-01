@@ -10,61 +10,72 @@ WAVファイルからアバターを動かすテスト
 import modal
 import os
 
-# GitHub repo URL (公式GUAVAリポジトリ)
-GUAVA_REPO = "https://github.com/mirai-gpro/GUAVA_gpro.git"
+# === Modal Volume設定 ===
+weights_volume = modal.Volume.from_name("guava-weights", create_if_missing=False)
 
-# Modal Image定義 - GitHubからコードを取得
-# Image version: v2 (force rebuild with all dependencies)
+# === Modal Image定義 (generate_ply_modal.pyと同一) ===
 guava_image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .env({"IMAGE_VERSION": "2"})  # Force rebuild
+    modal.Image.from_registry("nvidia/cuda:11.8.0-devel-ubuntu22.04", add_python="3.10")
     .apt_install(
-        "libgl1-mesa-glx",
-        "libglib2.0-0",
-        "git",
-        "ffmpeg",
+        "git", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg", "wget",
+        "libusb-1.0-0", "build-essential", "ninja-build",
+        "clang", "llvm", "libclang-dev",
         "libsndfile1"
     )
-    .pip_install(
-        "torch==2.1.0",
-        "torchvision==0.16.0",
-        "numpy<2",
-        "scipy",
-        "opencv-python",
-        "h5py",
-        "tqdm",
-        "imageio",
-        "imageio-ffmpeg",
-        "omegaconf",
-        "lightning",
-        "lmdb",
-        "librosa",
-        "soundfile",
-        "open3d",
-        "roma",
-        # Additional GUAVA dependencies
-        "plyfile",
-        "chumpy",
-        "easydict",
-        "kornia",
-        "transformers",
-        "configer",
-        "torchgeometry",
-        "colored",
-        "tyro",
-    )
-    .pip_install("gsplat==0.1.11")
-    .pip_install("git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7")
+
+    # 1. Base dependencies
     .run_commands(
-        f"git clone {GUAVA_REPO} /root/guava",
-        "cd /root/guava && git checkout main || true"
+        "python -m pip install --upgrade pip setuptools wheel",
+        "pip install 'numpy<2.0'"
     )
+    .run_commands(
+        "pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu118"
+    )
+
+    # 2. Build Tools & Core Libraries
+    .env({
+        "FORCE_CUDA": "1",
+        "CUDA_HOME": "/usr/local/cuda",
+        "MAX_JOBS": "4",
+        "TORCH_CUDA_ARCH_LIST": "8.6",
+        "CC": "clang",
+        "CXX": "clang++"
+    })
+    .run_commands(
+        "pip install chumpy==0.70 --no-build-isolation",
+        "pip install git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7 --no-build-isolation"
+    )
+
+    # 3. Submodules Build
+    .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=True)
+    .run_commands(
+        "cd /root/GUAVA/submodules/diff-gaussian-rasterization-32 && pip install . --no-build-isolation",
+        "cd /root/GUAVA/submodules/simple-knn && pip install . --no-build-isolation",
+        "cd /root/GUAVA/submodules/fused-ssim && pip install . --no-build-isolation"
+    )
+
+    # 4. Remaining libraries
+    .pip_install(
+        "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
+        "lmdb==1.6.2", "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
+        "rich==14.0.0", "opencv-python-headless", "xformers==0.0.24",
+        "tyro==0.8.0", "onnxruntime-gpu==1.18", "onnx==1.16", "mediapipe==0.10.21",
+        "transformers==4.37.0", "configer==1.3.1", "torchgeometry==0.1.2", "pynvml==13.0.1",
+        "numpy==1.26.4", "colored",
+        # Audio processing
+        "librosa", "soundfile"
+    )
+
+    # 5. Project Assets
+    .add_local_dir("./assets", remote_path="/root/GUAVA/assets")
+    .add_local_dir("./main", remote_path="/root/GUAVA/main")
+    .add_local_dir("./models", remote_path="/root/GUAVA/models")
+    .add_local_dir("./utils", remote_path="/root/GUAVA/utils")
+    .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset")
+    .add_local_dir("./configs", remote_path="/root/GUAVA/configs")
 )
 
 app = modal.App("guava-audio-test")
-
-# Volume定義
-weights_volume = modal.Volume.from_name("guava-weights", create_if_missing=False)
 
 
 def audio_to_flame_params(audio_path: str, fps: int = 30):
@@ -109,13 +120,15 @@ def audio_to_flame_params(audio_path: str, fps: int = 30):
     image=guava_image,
     volumes={"/assets": weights_volume},
     timeout=1800,
+    env={"MEDIAPIPE_DISABLE_GPU": "1"}
 )
 def run_audio_avatar_test(audio_data: bytes, audio_filename: str):
     """
     音声データからアバターアニメーションを生成
     """
     import sys
-    sys.path.insert(0, "/root/guava")
+    os.chdir("/root/GUAVA")
+    sys.path.insert(0, "/root/GUAVA")
 
     import torch
     import numpy as np
@@ -124,8 +137,17 @@ def run_audio_avatar_test(audio_data: bytes, audio_filename: str):
     from tqdm import tqdm
     from omegaconf import OmegaConf
     import lightning
+    import glob
+    import re
 
-    os.chdir("/root/guava")
+    # YAMLファイルのパス修正
+    for yaml_file in glob.glob("assets/GUAVA/*.yaml"):
+        with open(yaml_file, 'r') as f:
+            content = f.read()
+        if "C:\\" in content or "C:/" in content:
+            new_content = re.sub(r'[A-Z]:[\\/].*[\\/]assets', '/root/GUAVA/assets', content)
+            with open(yaml_file, 'w') as f:
+                f.write(new_content)
 
     # 音声ファイルを一時保存
     audio_path = f"/tmp/{audio_filename}"
