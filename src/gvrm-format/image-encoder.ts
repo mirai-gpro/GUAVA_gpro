@@ -846,6 +846,41 @@ export class ImageEncoder {
   }
 
   /**
+   * ソース画像のRGBをHWC形式で取得（Inverse Texture Mapping用）
+   * InverseTextureMapper.map() が期待する形式: [H, W, C]
+   * @returns [height * width * 3] HWC形式の正規化RGB (0-1)
+   */
+  getSourceImageRGBForMapping(): { data: Float32Array; width: number; height: number } {
+    if (!this.sourceImageData) {
+      throw new Error('[ImageEncoder] Source image not available. Call extractFeaturesWithSourceCamera() first.');
+    }
+
+    const width = this.sourceImageWidth;
+    const height = this.sourceImageHeight;
+    const result = new Float32Array(height * width * 3);
+
+    // Convert RGBA to RGB in HWC format
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const srcIdx = (y * width + x) * 4;  // RGBA source
+        const dstIdx = (y * width + x) * 3;  // RGB destination (HWC)
+
+        result[dstIdx + 0] = this.sourceImageData[srcIdx + 0] / 255.0;  // R
+        result[dstIdx + 1] = this.sourceImageData[srcIdx + 1] / 255.0;  // G
+        result[dstIdx + 2] = this.sourceImageData[srcIdx + 2] / 255.0;  // B
+      }
+    }
+
+    console.log('[ImageEncoder] Source RGB for mapping:', {
+      size: `${width}×${height}`,
+      format: 'HWC [H, W, 3]',
+      range: '0-1 normalized'
+    });
+
+    return { data: result, width, height };
+  }
+
+  /**
    * グローバル特徴 (CLS token) を取得 (UV StyleUNet用)
    * @returns 768次元のグローバル特徴
    */
