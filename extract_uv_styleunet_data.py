@@ -18,51 +18,72 @@ ehm_volume = modal.Volume.from_name("ehm-tracker-output", create_if_missing=True
 weights_volume = modal.Volume.from_name("guava-weights", create_if_missing=True)
 output_volume = modal.Volume.from_name("uv-styleunet-distill-data", create_if_missing=True)
 
-# === Modal Image定義 (generate_ply_modal.py の成功パターンを完全コピー) ===
+# === Modal Image定義 (generate_ply_cloud.py の CUDA 12.1 構成に変更) ===
+# xformers==0.0.24 は cu121 用なので、CUDA 12.1 が必要
 image = (
-    modal.Image.from_registry("nvidia/cuda:11.8.0-devel-ubuntu22.04", add_python="3.10")
+    modal.Image.from_registry("nvidia/cuda:12.1.1-devel-ubuntu22.04", add_python="3.10")
     .apt_install(
-        "git", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg", "wget",
-        "libusb-1.0-0", "build-essential", "ninja-build",
-        "clang", "llvm", "libclang-dev"
+        "libgl1-mesa-glx", "libglib2.0-0", "git", "ninja-build",
+        "build-essential", "libglm-dev", "clang", "dos2unix", "ffmpeg",
+        "libsm6", "libxext6", "libxrender-dev"
     )
 
-    # 1. Base dependencies - numpy<2.0 を最初にピン留め
-    .run_commands(
-        "python -m pip install --upgrade pip setuptools wheel",
-        "pip install 'numpy<2.0'"
-    )
-    .run_commands(
-        "pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu118"
-    )
-
-    # 2. Build Tools & Core Libraries - 環境変数を設定してからビルド
+    # 1. 環境変数設定
     .env({
-        "FORCE_CUDA": "1",
         "CUDA_HOME": "/usr/local/cuda",
         "MAX_JOBS": "4",
-        "TORCH_CUDA_ARCH_LIST": "8.6",
         "CC": "clang",
-        "CXX": "clang++"
+        "CXX": "clang++",
+        "TORCH_CUDA_ARCH_LIST": "8.9"
     })
+
+    # 2. Base dependencies
     .run_commands(
-        "pip install chumpy==0.70 --no-build-isolation",
-        "pip install git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7 --no-build-isolation"
+        "python -m pip install --upgrade pip setuptools wheel",
+        "pip install \"numpy==1.26.4\" \"scipy\""
     )
+    .run_commands("pip install chumpy --no-build-isolation")
 
-    # 3. Remaining libraries - numpy==1.26.4 を最後にピン留め
+    # 3. PyTorch with CUDA 12.1
+    .run_commands("pip install \"torch==2.1.0\" \"torchvision==0.16.0\" --extra-index-url https://download.pytorch.org/whl/cu121")
+
+    # 4. Core libraries (generate_ply_cloud.py と同じ)
     .pip_install(
-        "lightning==2.2.0", "roma==1.5.3", "imageio[pyav]", "imageio[ffmpeg]",
-        "open3d==0.19.0", "plyfile==1.0.3", "omegaconf==2.3.0",
-        "opencv-python-headless", "einops", "easydict", "trimesh",
-        "tqdm", "pillow", "pyyaml", "scipy", "smplx",
-        "numpy==1.26.4"
+        "lightning", "pytorch-lightning", "omegaconf", "gsplat",
+        "opencv-python", "h5py", "tqdm", "scikit-image", "trimesh", "plyfile",
+        "lmdb", "lpips", "open3d", "roma", "smplx", "yacs", "ninja",
+        "colored", "termcolor", "tabulate", "vispy", "configargparse", "portalocker",
+        "fvcore", "iopath", "imageio-ffmpeg"
     )
 
-    # 4. Project Assets
-    .add_local_dir("./models", remote_path="/root/GUAVA/models", copy=False)
-    .add_local_dir("./utils", remote_path="/root/GUAVA/utils", copy=False)
-    .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=False)
+    # 5. numpy ピン留め
+    .run_commands("pip install \"numpy==1.26.4\"")
+
+    # 6. PyTorch3D (prebuilt wheel for cu121/pyt210)
+    .run_commands("pip install --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt210/download.html")
+
+    # 7. Submodules Build
+    .add_local_dir("./submodules", remote_path="/root/GUAVA/submodules", copy=True)
+    .run_commands(
+        "cd /root/GUAVA/submodules/diff-gaussian-rasterization-32 && rm -rf build && pip install . --no-build-isolation",
+        "cd /root/GUAVA/submodules/simple-knn && rm -rf build && pip install . --no-build-isolation",
+        "cd /root/GUAVA/submodules/fused-ssim && rm -rf build && pip install . --no-build-isolation"
+    )
+
+    # 8. Additional libraries for UV StyleUNet extraction
+    .pip_install(
+        "xformers==0.0.23",  # DINOv2 memory_efficient_attention用 (torch 2.1.x 互換)
+        "transformers==4.37.0",  # DINOv2
+        "einops", "easydict", "rich"
+    )
+
+    # 9. Project Assets (copy=True必須: 後にdos2unixを実行するため)
+    .add_local_dir("./main", remote_path="/root/GUAVA/main", copy=True)
+    .add_local_dir("./models", remote_path="/root/GUAVA/models", copy=True)
+    .add_local_dir("./utils", remote_path="/root/GUAVA/utils", copy=True)
+    .add_local_dir("./dataset", remote_path="/root/GUAVA/dataset", copy=True)
+    .add_local_dir("./configs", remote_path="/root/GUAVA/configs", copy=True)
+    .run_commands("find /root/GUAVA -maxdepth 3 -name '*.py' | xargs dos2unix")
 )
 
 app = modal.App("uv-styleunet-data-extraction")
@@ -73,7 +94,7 @@ app = modal.App("uv-styleunet-data-extraction")
     gpu="L4",
     timeout=4 * 3600,
     volumes={
-        "/root/ehm_output": ehm_volume,
+        "/root/EHM_results": ehm_volume,
         "/root/GUAVA/assets": weights_volume,
         "/root/distill_data": output_volume,
     },
@@ -88,6 +109,9 @@ def extract_uv_styleunet_data(num_frames: int = 100, num_angles: int = 9):
     - Extra Style: 512-dim (uv_style_mapping出力)
     """
     import sys
+    import os
+
+    os.chdir("/root/GUAVA")
     sys.path.insert(0, "/root/GUAVA")
 
     import torch
@@ -174,152 +198,125 @@ def extract_uv_styleunet_data(num_frames: int = 100, num_angles: int = 9):
     print("Hooks registered on uv_feature_decoder and uv_style_mapping")
 
     # ============================================================
-    # Load EHM Tracking Data
+    # Load EHM Tracking Data (generate_ply_cloud.py と同じ方法)
     # ============================================================
 
-    ehm_data_path = Path("/root/ehm_output")
-    tracking_dirs = list(ehm_data_path.glob("**/tracked_data"))
+    from omegaconf import OmegaConf
+    from dataset import TrackedData_infer
+    from utils.general_utils import ConfigDict, add_extra_cfgs
 
-    if not tracking_dirs:
-        print("No tracking data found!")
+    # find_tracking_data 関数 (generate_ply_cloud.py からコピー)
+    def find_tracking_data(base_path, max_depth=3):
+        if max_depth <= 0:
+            return None
+        tracking_file = os.path.join(base_path, 'optim_tracking_ehm.pkl')
+        if os.path.exists(tracking_file):
+            return base_path
+        if os.path.isdir(base_path):
+            for item in os.listdir(base_path):
+                item_path = os.path.join(base_path, item)
+                if os.path.isdir(item_path):
+                    result = find_tracking_data(item_path, max_depth - 1)
+                    if result:
+                        return result
+        return None
+
+    search_path = "/root/EHM_results/processed_data"
+    data_path = None
+
+    if os.path.exists(search_path):
+        data_path = find_tracking_data(search_path)
+        if data_path:
+            print(f"Found tracking data: {data_path}")
+        else:
+            print(f"No optim_tracking_ehm.pkl found in {search_path}")
+            return {"error": "No tracking data"}
+    else:
+        print(f"EHM results directory not found: {search_path}")
         return {"error": "No tracking data"}
 
-    print(f"Found {len(tracking_dirs)} tracking directories")
+    # Dataset設定
+    model_path = "assets/GUAVA"
+    model_config_path = os.path.join(model_path, 'config.yaml')
+    meta_cfg_dataset = ConfigDict(model_config_path=model_config_path)
+    meta_cfg_dataset = add_extra_cfgs(meta_cfg_dataset)
+
+    meta_cfg_dataset['DATASET']['data_path'] = data_path
+    OmegaConf.set_readonly(meta_cfg_dataset._dot_config, False)
+    meta_cfg_dataset._dot_config.DATASET.data_path = data_path
+    OmegaConf.set_readonly(meta_cfg_dataset._dot_config, True)
+
+    test_dataset = TrackedData_infer(cfg=meta_cfg_dataset, split='test', device=device, test_full=True)
+    print(f"Dataset loaded: {len(test_dataset)} samples")
+
+    video_ids = list(test_dataset.videos_info.keys())
+    print(f"Found {len(video_ids)} videos")
 
     # ============================================================
-    # Camera Angle Generation
-    # ============================================================
-
-    def generate_camera_angles(base_w2c, num_angles=9):
-        """Generate multiple camera viewpoints"""
-        angles = [base_w2c]
-
-        if num_angles <= 1:
-            return angles
-
-        # Rotation angles
-        rotation_degrees = [-30, -15, 15, 30]  # Yaw
-        tilt_degrees = [-15, 15]  # Pitch
-
-        for deg in rotation_degrees[:min(num_angles-1, len(rotation_degrees))]:
-            rad = np.radians(deg)
-            rot_y = torch.tensor([
-                [np.cos(rad), 0, np.sin(rad), 0],
-                [0, 1, 0, 0],
-                [-np.sin(rad), 0, np.cos(rad), 0],
-                [0, 0, 0, 1]
-            ], dtype=base_w2c.dtype, device=base_w2c.device)
-            angles.append(torch.matmul(rot_y, base_w2c))
-
-        for deg in tilt_degrees[:max(0, num_angles - 1 - len(rotation_degrees))]:
-            rad = np.radians(deg)
-            rot_x = torch.tensor([
-                [1, 0, 0, 0],
-                [0, np.cos(rad), -np.sin(rad), 0],
-                [0, np.sin(rad), np.cos(rad), 0],
-                [0, 0, 0, 1]
-            ], dtype=base_w2c.dtype, device=base_w2c.device)
-            angles.append(torch.matmul(rot_x, base_w2c))
-
-        return angles[:num_angles]
-
-    # ============================================================
-    # Data Extraction Loop
+    # Data Extraction Loop - 複数フレームを処理
     # ============================================================
 
     sample_count = 0
+    total_target = num_frames
 
-    for tracking_dir in tracking_dirs:
-        if sample_count >= num_frames:
+    for video_id in video_ids:
+        if sample_count >= total_target:
             break
 
-        print(f"\nProcessing: {tracking_dir}")
+        print(f"\nProcessing video: {video_id}")
 
-        # Find data files
-        frame_files = sorted(tracking_dir.glob("frame_*.pt")) or sorted(tracking_dir.glob("*.pt"))
-        image_files = sorted(tracking_dir.parent.glob("images/*.png")) or sorted(tracking_dir.parent.glob("images/*.jpg"))
+        # ビデオ内のフレーム数を取得
+        video_info = test_dataset.videos_info[video_id]
+        frames_num = video_info['frames_num']
+        frames_keys = video_info['frames_keys']
+        print(f"  Total frames in video: {frames_num}")
 
-        if not frame_files:
-            print(f"  No frame data found in {tracking_dir}")
-            continue
-
-        print(f"  Found {len(frame_files)} frames, {len(image_files)} images")
-
-        for frame_idx, frame_file in enumerate(tqdm(frame_files, desc="Extracting")):
-            if sample_count >= num_frames:
-                break
-
+        # 各フレームを処理 (key_idx を変えて複数のソースフレームを処理)
+        for frame_idx in tqdm(range(min(frames_num, total_target - sample_count)), desc=f"  Extracting {video_id}"):
             try:
-                # Load frame data
-                frame_data = torch.load(frame_file, map_location=device)
+                # 異なるフレームをソースとして読み込み
+                source_info = test_dataset._load_source_info(video_id, key_idx=frame_idx)
 
-                # Load corresponding image
-                if frame_idx < len(image_files):
-                    from PIL import Image
-                    import torchvision.transforms as T
+                # Forward pass (hooks がデータをキャプチャ)
+                with torch.no_grad():
+                    vertex_gs_dict, uv_point_gs_dict, extra_dict = infer_model(source_info)
 
-                    img = Image.open(image_files[frame_idx]).convert('RGB')
-                    transform = T.Compose([
-                        T.Resize((518, 518)),
-                        T.ToTensor(),
-                    ])
-                    image_tensor = transform(img).unsqueeze(0).to(device)
-                else:
-                    # Fallback: random image
-                    image_tensor = torch.rand(1, 3, 518, 518, device=device)
+                # キャプチャされたデータを確認
+                if captured_data['input'] is None or captured_data['output'] is None:
+                    print(f"    No data captured for frame {frame_idx}")
+                    continue
 
-                # Prepare batch
-                batch = {
-                    'image': image_tensor,
-                    'smplx_coeffs': frame_data.get('smplx_coeffs', torch.zeros(1, 156, device=device)),
-                    'flame_coeffs': frame_data.get('flame_coeffs', torch.zeros(1, 100, device=device)),
-                    'w2c_cam': frame_data.get('w2c_cam', torch.eye(4, device=device).unsqueeze(0)),
-                }
+                # データを保存
+                sample_id = f"{sample_count:06d}"
 
-                # Generate multiple camera angles
-                base_w2c = batch['w2c_cam']
-                camera_angles = generate_camera_angles(base_w2c[0], num_angles)
+                torch.save(captured_data['input'], output_dir / "input_35ch" / f"{sample_id}.pt")
+                torch.save(captured_data['output'], output_dir / "output_96ch" / f"{sample_id}.pt")
 
-                for angle_idx, w2c in enumerate(camera_angles):
-                    if sample_count >= num_frames:
-                        break
+                if captured_data['extra_style'] is not None:
+                    torch.save(captured_data['extra_style'], output_dir / "extra_style" / f"{sample_id}.pt")
 
-                    batch['w2c_cam'] = w2c.unsqueeze(0)
+                # 最初と最後のサンプルのみ詳細を表示
+                if sample_count == 0 or sample_count == total_target - 1 or (sample_count + 1) % 20 == 0:
+                    print(f"    Sample {sample_id}: Input {captured_data['input'].shape}, Output {captured_data['output'].shape}")
 
-                    # Forward pass (triggers hooks)
-                    with torch.no_grad():
-                        try:
-                            vertex_gs_dict, uv_point_gs_dict, extra_dict = infer_model(batch)
-                        except Exception as e:
-                            print(f"  Forward error: {e}")
-                            continue
+                sample_count += 1
 
-                    # Check if data was captured
-                    if captured_data['input'] is None or captured_data['output'] is None:
-                        print(f"  No data captured for frame {frame_idx}, angle {angle_idx}")
-                        continue
+                # キャプチャデータをリセット
+                captured_data['input'] = None
+                captured_data['output'] = None
+                captured_data['extra_style'] = None
 
-                    # Save captured data
-                    sample_id = f"{sample_count:06d}"
-
-                    torch.save(captured_data['input'], output_dir / "input_35ch" / f"{sample_id}.pt")
-                    torch.save(captured_data['output'], output_dir / "output_96ch" / f"{sample_id}.pt")
-
-                    if captured_data['extra_style'] is not None:
-                        torch.save(captured_data['extra_style'], output_dir / "extra_style" / f"{sample_id}.pt")
-
-                    sample_count += 1
-
-                    # Reset captured data
-                    captured_data['input'] = None
-                    captured_data['output'] = None
-                    captured_data['extra_style'] = None
+                if sample_count >= total_target:
+                    break
 
             except Exception as e:
-                print(f"  Error processing frame {frame_idx}: {e}")
+                print(f"    Error processing frame {frame_idx}: {e}")
                 import traceback
                 traceback.print_exc()
                 continue
+
+    # Cleanup
+    test_dataset._lmdb_engine.close()
 
     # Cleanup
     hook_handle.remove()

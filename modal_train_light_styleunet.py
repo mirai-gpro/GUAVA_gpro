@@ -42,6 +42,7 @@ image = (
         "pillow",
         "tqdm",
         "tensorboard",
+        "onnx",  # ONNX export用
     )
 )
 
@@ -64,6 +65,8 @@ def train_light_styleunet(
     learning_rate: float = 1e-4,
     checkpoint_path: str = None,
     use_synthetic: bool = False,  # True: 合成データ, False: 実データ
+    base_ch: int = 48,  # チャンネル数 (48=標準, 32=軽量)
+    use_fp16: bool = False,  # FP16量子化
 ):
     """
     Knowledge Distillation で軽量 StyleUNet を訓練
@@ -377,8 +380,8 @@ def train_light_styleunet(
             param.requires_grad = False
 
     # Create Student model
-    print("\nCreating Student model...")
-    student = LightStyleUNet(in_ch=35, out_ch=96, base_ch=48, style_dim=512).to(device)
+    print(f"\nCreating Student model (base_ch={base_ch})...")
+    student = LightStyleUNet(in_ch=35, out_ch=96, base_ch=base_ch, style_dim=512).to(device)
 
     student_params = sum(p.numel() for p in student.parameters())
     print(f"  Student parameters: {student_params:,} ({student_params * 4 / 1024 / 1024:.2f} MB)")
@@ -504,18 +507,24 @@ def train_light_styleunet(
     # ============================================================
 
     print(f"\n{'='*60}")
-    print("Exporting best model to ONNX...")
+    print(f"Exporting best model to ONNX (FP16={use_fp16})...")
     print(f"{'='*60}")
 
     best_ckpt = torch.load(f"{VOLUME_PATH}/checkpoints/light_styleunet_best.pt", map_location=device)
     student.load_state_dict(best_ckpt['student_state_dict'])
     student.eval()
 
-    # Dummy inputs
-    dummy_x = torch.randn(1, 35, 512, 512, device=device)
-    dummy_style = torch.randn(1, 512, device=device)
+    # FP16変換
+    if use_fp16:
+        student = student.half()
+        dummy_x = torch.randn(1, 35, 512, 512, device=device, dtype=torch.float16)
+        dummy_style = torch.randn(1, 512, device=device, dtype=torch.float16)
+        onnx_path = f"{VOLUME_PATH}/light_styleunet_fp16.onnx"
+    else:
+        dummy_x = torch.randn(1, 35, 512, 512, device=device)
+        dummy_style = torch.randn(1, 512, device=device)
+        onnx_path = f"{VOLUME_PATH}/light_styleunet.onnx"
 
-    onnx_path = f"{VOLUME_PATH}/light_styleunet.onnx"
     torch.onnx.export(
         student,
         (dummy_x, dummy_style),
@@ -535,6 +544,8 @@ def train_light_styleunet(
     print(f"Exported: {onnx_path}")
     print(f"  Size: {onnx_size:.2f} MB")
     print(f"  Compression: {118 / onnx_size:.1f}x smaller than original")
+    print(f"  Base channels: {base_ch}")
+    print(f"  FP16: {use_fp16}")
 
     # Commit volume
     training_volume.commit()
@@ -549,16 +560,187 @@ def train_light_styleunet(
         'onnx_size_mb': onnx_size,
         'compression_ratio': 118 / onnx_size,
         'data_mode': 'synthetic' if teacher is not None else 'real',
+        'base_ch': base_ch,
+        'fp16': use_fp16,
+    }
+
+
+@app.function(
+    image=image,
+    gpu="L4",
+    timeout=600,
+    volumes={VOLUME_PATH: training_volume},
+)
+def export_onnx_only(base_ch: int = 48, use_fp16: bool = False):
+    """
+    既存のチェックポイントからONNXをエクスポート
+    """
+    import torch
+    import torch.nn as nn
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Student model definition (same as training)
+    class ESA(nn.Module):
+        def __init__(self, channels, reduction=4):
+            super().__init__()
+            self.conv1 = nn.Conv2d(channels, channels // reduction, 1)
+            self.conv2 = nn.Conv2d(channels // reduction, channels // reduction, 3, padding=1, groups=max(1, channels // reduction))
+            self.conv3 = nn.Conv2d(channels // reduction, channels, 1)
+            self.sigmoid = nn.Sigmoid()
+
+        def forward(self, x):
+            avg = x.mean(dim=[2, 3], keepdim=True)
+            att = self.conv1(avg)
+            att = nn.functional.relu(att)
+            att = self.conv2(att)
+            att = nn.functional.relu(att)
+            att = self.conv3(att)
+            return x * self.sigmoid(att)
+
+    class RFDB(nn.Module):
+        def __init__(self, channels, distill_rate=0.25):
+            super().__init__()
+            distill_ch = int(channels * distill_rate)
+            remain_ch = channels - distill_ch
+            self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+            self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
+            self.conv3 = nn.Conv2d(channels, channels, 3, padding=1)
+            self.distill_conv = nn.Conv2d(channels, distill_ch, 1)
+            self.remain_conv = nn.Conv2d(channels, remain_ch, 1)
+            self.esa = ESA(channels)
+            self.act = nn.LeakyReLU(0.2, True)
+
+        def forward(self, x):
+            out1 = self.act(self.conv1(x))
+            out2 = self.act(self.conv2(out1))
+            out3 = self.act(self.conv3(out2))
+            distill = self.distill_conv(out3)
+            remain = self.remain_conv(out3)
+            out = torch.cat([distill, remain], dim=1)
+            out = self.esa(out)
+            return out + x
+
+    class LightStyleUNet(nn.Module):
+        def __init__(self, in_ch=35, out_ch=96, base_ch=48, style_dim=512):
+            super().__init__()
+            self.style_proj = nn.Sequential(
+                nn.Linear(style_dim, base_ch * 4),
+                nn.LeakyReLU(0.2, True),
+                nn.Linear(base_ch * 4, base_ch * 4),
+            )
+            self.input_conv = nn.Conv2d(in_ch, base_ch, 3, padding=1)
+            self.enc1 = RFDB(base_ch)
+            self.enc2 = RFDB(base_ch)
+            self.down1 = nn.Conv2d(base_ch, base_ch * 2, 3, stride=2, padding=1)
+            self.enc3 = RFDB(base_ch * 2)
+            self.enc4 = RFDB(base_ch * 2)
+            self.down2 = nn.Conv2d(base_ch * 2, base_ch * 4, 3, stride=2, padding=1)
+            self.bottleneck1 = RFDB(base_ch * 4)
+            self.bottleneck2 = RFDB(base_ch * 4)
+            self.style_mod = nn.Conv2d(base_ch * 4, base_ch * 4, 1)
+            self.up1 = nn.ConvTranspose2d(base_ch * 4, base_ch * 2, 4, stride=2, padding=1)
+            self.dec1 = RFDB(base_ch * 2)
+            self.dec2 = RFDB(base_ch * 2)
+            self.up2 = nn.ConvTranspose2d(base_ch * 2, base_ch, 4, stride=2, padding=1)
+            self.dec3 = RFDB(base_ch)
+            self.dec4 = RFDB(base_ch)
+            self.output_conv = nn.Conv2d(base_ch, out_ch, 3, padding=1)
+            self.act = nn.LeakyReLU(0.2, True)
+
+        def forward(self, x, style):
+            style_emb = self.style_proj(style)
+            f = self.act(self.input_conv(x))
+            f = self.enc1(f)
+            f1 = self.enc2(f)
+            f = self.act(self.down1(f1))
+            f = self.enc3(f)
+            f2 = self.enc4(f)
+            f = self.act(self.down2(f2))
+            f = self.bottleneck1(f)
+            B, C, H, W = f.shape
+            style_scale = style_emb.view(B, C, 1, 1)
+            f = f * (1 + self.style_mod(style_scale.expand(-1, -1, H, W)))
+            f = self.bottleneck2(f)
+            f = self.act(self.up1(f))
+            f = f + f2
+            f = self.dec1(f)
+            f = self.dec2(f)
+            f = self.act(self.up2(f))
+            f = f + f1
+            f = self.dec3(f)
+            f = self.dec4(f)
+            out = self.output_conv(f)
+            return out
+
+    # Load checkpoint
+    ckpt_path = f"{VOLUME_PATH}/checkpoints/light_styleunet_best.pt"
+    print(f"Loading checkpoint: {ckpt_path}")
+    print(f"  base_ch={base_ch}, use_fp16={use_fp16}")
+
+    student = LightStyleUNet(in_ch=35, out_ch=96, base_ch=base_ch, style_dim=512).to(device)
+    ckpt = torch.load(ckpt_path, map_location=device)
+    student.load_state_dict(ckpt['student_state_dict'])
+    student.eval()
+
+    print(f"Loaded checkpoint from epoch {ckpt.get('epoch', 'unknown')}, loss: {ckpt.get('loss', 'unknown')}")
+
+    # FP16変換
+    if use_fp16:
+        student = student.half()
+        dummy_x = torch.randn(1, 35, 512, 512, device=device, dtype=torch.float16)
+        dummy_style = torch.randn(1, 512, device=device, dtype=torch.float16)
+        suffix = f"_ch{base_ch}_fp16"
+    else:
+        dummy_x = torch.randn(1, 35, 512, 512, device=device)
+        dummy_style = torch.randn(1, 512, device=device)
+        suffix = f"_ch{base_ch}"
+
+    onnx_path = f"{VOLUME_PATH}/light_styleunet{suffix}.onnx"
+    torch.onnx.export(
+        student,
+        (dummy_x, dummy_style),
+        onnx_path,
+        export_params=True,
+        opset_version=14,
+        input_names=['uv_features', 'extra_style'],
+        output_names=['output'],
+        dynamic_axes={
+            'uv_features': {0: 'batch', 2: 'height', 3: 'width'},
+            'extra_style': {0: 'batch'},
+            'output': {0: 'batch', 2: 'height', 3: 'width'},
+        },
+    )
+
+    import os
+    onnx_size = os.path.getsize(onnx_path) / 1024 / 1024
+    print(f"\nExported: {onnx_path}")
+    print(f"  Size: {onnx_size:.2f} MB")
+    print(f"  Compression: {118 / onnx_size:.1f}x smaller than original (118MB)")
+    print(f"  Base channels: {base_ch}")
+    print(f"  FP16: {use_fp16}")
+
+    training_volume.commit()
+
+    return {
+        'onnx_path': onnx_path,
+        'onnx_size_mb': onnx_size,
+        'compression_ratio': 118 / onnx_size,
+        'base_ch': base_ch,
+        'fp16': use_fp16,
     }
 
 
 @app.local_entrypoint()
 def main(
+    action: str = "train",
     epochs: int = 100,
     batch_size: int = 2,
     lr: float = 1e-4,
     resume: str = None,
     use_synthetic: bool = False,
+    base_ch: int = 48,  # 軽量化: 32推奨
+    fp16: bool = False,  # FP16量子化
 ):
     """
     使用方法:
@@ -566,19 +748,42 @@ def main(
     # 実データで学習 (推奨)
     modal run modal_train_light_styleunet.py --epochs 100 --batch-size 2
 
+    # 軽量モデル + FP16で学習 (スマホ向け)
+    modal run modal_train_light_styleunet.py --epochs 100 --base-ch 32 --fp16
+
     # 合成データで学習 (データ抽出前のテスト用)
     modal run modal_train_light_styleunet.py --epochs 50 --use-synthetic
 
     # チェックポイントから再開
     modal run modal_train_light_styleunet.py --resume /vol/checkpoints/light_styleunet_epoch50.pt
 
+    # ONNXエクスポートのみ (既存チェックポイントから)
+    modal run modal_train_light_styleunet.py --action export --base-ch 32 --fp16
+
     # 学習後のモデルダウンロード
-    modal volume get guava-training-vol light_styleunet.onnx
+    modal volume get guava-training-vol light_styleunet_ch32_fp16.onnx
     """
+    if action == "export":
+        print(f"Exporting to ONNX (base_ch={base_ch}, fp16={fp16})...")
+        result = export_onnx_only.remote(base_ch=base_ch, use_fp16=fp16)
+        print("\n" + "=" * 60)
+        print("Export Results:")
+        print("=" * 60)
+        print(f"  ONNX size: {result['onnx_size_mb']:.2f} MB")
+        print(f"  Compression: {result['compression_ratio']:.1f}x")
+        print(f"  Base channels: {result['base_ch']}")
+        print(f"  FP16: {result['fp16']}")
+        print(f"\nONNX model saved to: {result['onnx_path']}")
+        print("\nTo download the model:")
+        print(f"  modal volume get guava-training-vol {result['onnx_path'].split('/')[-1]}")
+        return
+
     print("Starting Light StyleUNet distillation training...")
     print(f"  Epochs: {epochs}")
     print(f"  Batch size: {batch_size}")
     print(f"  Learning rate: {lr}")
+    print(f"  Base channels: {base_ch}")
+    print(f"  FP16: {fp16}")
     print(f"  Use synthetic: {use_synthetic}")
 
     result = train_light_styleunet.remote(
@@ -587,6 +792,8 @@ def main(
         learning_rate=lr,
         checkpoint_path=resume,
         use_synthetic=use_synthetic,
+        base_ch=base_ch,
+        use_fp16=fp16,
     )
 
     print("\n" + "=" * 60)
@@ -596,6 +803,8 @@ def main(
     print(f"  Best loss: {result['best_loss']:.6f}")
     print(f"  ONNX size: {result['onnx_size_mb']:.2f} MB")
     print(f"  Compression: {result['compression_ratio']:.1f}x")
+    print(f"  Base channels: {result['base_ch']}")
+    print(f"  FP16: {result['fp16']}")
     print(f"\nONNX model saved to: {result['onnx_path']}")
     print("\nTo download the model:")
-    print("  modal volume get guava-training-vol light_styleunet.onnx")
+    print(f"  modal volume get guava-training-vol {result['onnx_path'].split('/')[-1]}")
